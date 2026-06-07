@@ -190,13 +190,13 @@ Every stage was gated numerically against the original PyTorch model (a dev-only
 | LLM hidden (Qwen2.5) | cosine | 0.99999970 |
 | Flow solver (true-fp32 floor) | max-abs | 1.4e-4 |
 
-**The tf32 finding — why the end-to-end test is behavioral, not sample-exact.** MLX's fast matmul rounds fp32 operands to ~tf32 (10-bit mantissa) on the GPU. The per-stage gates sidestep this with an explicit high-precision path. But the euler ODE in the flow solver *amplifies* the per-step DiT matmul tf32 floor (fast-path max-abs 0.577 vs the true-fp32 floor of 1.4e-4), so across 10 integration steps × N patches the trajectory diverges enough that the waveform does **not** sample-align with the PyTorch golden. This is a runtime-precision property, not a port bug — sample-exact e2e parity isn't reachable on this hardware path. So the e2e gate is **behavioral**: WER 0.0 / SIM 0.829 / finite / right duration / clean onset confirm the output is *correct*. The component-level numerics prove the math; the behavioral gate proves the product.
+**The tf32 finding — why the end-to-end test is behavioral, not sample-exact.** MLX's fast matmul rounds fp32 operands to ~tf32 (10-bit mantissa) on the GPU. The per-stage gates sidestep this with an explicit high-precision path. But the euler ODE in the flow solver *amplifies* the per-step DiT matmul tf32 floor (fast-path max-abs 0.577 vs the true-fp32 floor of 1.4e-4), so across 10 integration steps × N patches the trajectory diverges enough that the waveform does **not** sample-align with the PyTorch golden. This is a runtime-precision property, not a port bug — sample-exact e2e parity isn't reachable on this hardware path. So the e2e gate is **behavioral**: the output is intelligible, in the correct language, voice-matched, finite, the right duration, and clean-onset. The component-level numerics prove the math; the behavioral gate proves the product.
 
 Tests live in `tests/` (pytest). They skip cleanly when the converted weights or PyTorch fixtures are absent. Regenerate fixtures with `tools/oracle.py` under the `[oracle]` extra **plus** the upstream `dots_tts` package installed from source (`pip install -e /path/to/dots.tts`) — see [Install](#install).
 
 ## Limitations
 
-- **Hindi is preview-tier** (0.105 WER) — correct and usable, but slightly higher WER on the low-resource tail, as the paper predicts. EN/DE/ES/FR are ship-tier.
+- **Hindi is preview-tier** — correct and usable, but slightly higher error on the low-resource tail, as the paper predicts. EN/DE/ES/FR are ship-tier.
 - **Memory:** ~10 GB resident at bf16 (dominated by the resident Qwen2.5 backbone + DiT); fp32 parity runs land ~2× that.
 - **No native speech-rate knob** — dots.tts is a self-pacing AR model; pacing is controlled post-hoc via `--speed` (ffmpeg time-stretch).
 - **Apple Silicon only** — MLX is Metal-only.
