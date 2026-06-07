@@ -263,7 +263,9 @@ class DotsTtsModel:
         latent_stats = str(path / "latent_stats.npz")
 
         tokenizer = DotsTokenizer.from_pretrained(path / "tokenizer")
-        llm = DotsLLM.from_core(core, llm_config_json, dtype=dtype)
+        llm = DotsLLM.from_core(
+            core, llm_config_json, dtype=dtype, quantization=config.quantization
+        )
         vae = load_audiovae(vocoder, dtype=dtype, with_encoder=True)
         speaker = load_speaker(speaker_st, dtype=dtype)
         dit = load_dit(core, dtype=dtype)
