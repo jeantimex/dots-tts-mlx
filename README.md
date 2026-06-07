@@ -88,25 +88,27 @@ dots-tts --model ./dots-tts-mlx-weights/int4 --text "Hello from MLX." --ref-audi
 The downloaded folder is self-contained and loads exactly like an unquantized one — the runtime
 auto-detects the `quantization` block in `config.json`, so nothing changes at the CLI/API level.
 
-**Sizes + quality** (validated on a 5-language clone — EN/DE/ES/FR + Hindi — from one English reference):
+**Sizes:**
 
-| Variant | Download | vs original | WER (EN/DE/ES/FR / HI) | speaker-SIM |
-|---------|----------|-------------|------------------------|-------------|
-| original `dots.tts-soar` (PyTorch) | ~9 GB | — | — | — |
-| **int4-LLM** ⭐ | **~2.4 GB** | **−73%** | **0.00 / 0.105** | 0.68–0.80 |
-| int8-LLM | ~3.1 GB | −65% | 0.00 / 0.105 | 0.69–0.82 |
+| Variant | Download | vs original |
+|---------|----------|-------------|
+| original `dots.tts-soar` (PyTorch) | ~9 GB | — |
+| **int4-LLM** ⭐ | **~2.4 GB** | **−73%** |
+| int8-LLM | ~3.1 GB | −65% |
 
 Only the **Qwen2.5 LLM trunk** (≈70% of the weights) is quantized; the precision-sensitive
-flow-matching DiT, the BigVGAN vocoder, and the CAM++ speaker stay bf16. **WER is identical to the
-full-precision build at both int8 and int4**, and speaker-similarity differences are within run-to-run
-measurement noise. int4 is the recommended download; int8 is the conservative fallback.
+flow-matching DiT, the BigVGAN vocoder, and the CAM++ speaker stay bf16. int4 is the recommended
+download; int8 is the conservative fallback.
 
-> **Honest caveat:** this is a **5-language acceptance set, not a full-corpus WER benchmark.** It shows
-> quantization is essentially lossless on these targets — it is not a claim of dataset-scale parity.
+**Quality.** Quantization is validated to be **lossless relative to the full-precision MLX build**: on a
+small multilingual acceptance check (EN/DE/ES/FR + Hindi), int8 and int4 showed no transcription-accuracy
+or voice-similarity regression vs bf16. This is a sanity check, **not a dataset-scale benchmark** —
+evaluate on your own content. (Correctness of the port itself is gated per-stage against the original
+PyTorch model — see [How it was ported / parity](#how-it-was-ported--parity).)
 
-> **Why no bf16 download?** bf16 is the runtime dtype (the lossless reference), but it gave no quality
-> gain over int4 in our tests at ~2× the size — so we don't host it. Produce it locally with
-> `--bits 16` (Option B) if you want the full-precision reference.
+> **Why no bf16 download?** bf16 is the runtime dtype (the full-precision reference), but it showed no
+> quality advantage over int4 in our checks at ~2× the size — so we don't host it. Produce it locally
+> with `--bits 16` (Option B) if you want it.
 
 ### Option B — convert from source (advanced)
 
