@@ -32,22 +32,6 @@ If you need any of those, use the upstream project: [code](https://github.com/re
 - **Zero-shot voice clone:** one reference wav (+ optional transcript) clones the voice; cross-language transfer works from a single reference.
 - **Clean onsets:** continuous AR means no discrete-token warm-up — the clip opens on a real word.
 
-## Headline results
-
-Cloned into 5 languages from **one English reference** (`--num-steps 10 --guidance-scale 1.2 --speaker-scale 1.5`, bf16 runtime), scored with MLX-Whisper WER + CAM++ speaker-SIM:
-
-| Lang | Tier | WER | speaker-SIM |
-|------|------|-----|-------------|
-| EN | ship | **0.000** | 0.830 |
-| DE | ship | **0.000** | 0.794 |
-| ES | ship | **0.000** | 0.781 |
-| FR | ship | **0.000** | 0.719 |
-| HI | preview | **0.105** | 0.784 |
-
-EN/DE/ES/FR are ship-tier (0.0 WER on short, clean, in-domain sentences — better than the dots.tts paper's quoted ~1–3.5% for these targets). Hindi at 0.105 WER is **preview-tier**: fully intelligible, with only minor diacritic/spelling slips that are phonetically correct. SIM 0.72–0.83 is strong; the English self-clone (0.830) is the ceiling, with cross-language transfer sitting just below as expected.
-
-24 languages are supported overall (the model's full coverage); the matrix above is the validated subset. See [How it was ported / parity](#how-it-was-ported--parity) below for the per-stage gates and methodology.
-
 ## Install
 
 Requires Python ≥ 3.10 on Apple Silicon (MLX is Metal-only).
