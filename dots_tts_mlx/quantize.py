@@ -30,6 +30,9 @@ _LLM_PREFIX = "llm."
 
 
 def _qwen_args(llm_cfg: dict) -> Qwen2Args:
+    # MUST stay in sync with dots_tts_mlx.llm.DotsLLM.from_core's Qwen2Args build:
+    # the quantized skeleton written here is loaded by that path, so any divergence
+    # in the args silently breaks quantized loading.
     return Qwen2Args(
         model_type=llm_cfg.get("model_type", "qwen2"),
         hidden_size=llm_cfg["hidden_size"],
@@ -53,7 +56,12 @@ def _cast_quant(v: mx.array) -> mx.array:
 
 
 def quantize_dir(src, out, bits: int, group_size: int = 64) -> dict:
-    """Write a bf16/int8/int4 variant of the converted weights dir ``src`` to ``out``."""
+    """Write a bf16/int8/int4 variant of the converted weights dir ``src`` to ``out``.
+
+    ``src`` must be the **fp32 convert output** (``python -m dots_tts_mlx.convert``), not an
+    already-quantized variant — the bf16 path casts every tensor to bf16 and would corrupt
+    packed weights if fed a quantized dir.
+    """
     src, out = Path(src), Path(out)
     out.mkdir(parents=True, exist_ok=True)
 
