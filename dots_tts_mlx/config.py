@@ -198,6 +198,28 @@ class LLMConfig:
 
 
 @dataclass
+class QuantizationConfig:
+    """Records which submodules are quantized + the mlx quant params.
+
+    Absent from config.json ⇒ unquantized (``ModelConfig.quantization is None``).
+    Present ⇒ the loader rebuilds the quantized skeleton (``nn.quantize``) before
+    binding weights. Stage-1 scope: ``components == ["llm"]``.
+    """
+
+    bits: int
+    group_size: int = 64
+    components: list[str] = field(default_factory=lambda: ["llm"])
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "QuantizationConfig":
+        return cls(
+            bits=int(d["bits"]),
+            group_size=int(d.get("group_size", 64)),
+            components=list(d.get("components", ["llm"])),
+        )
+
+
+@dataclass
 class ModelConfig:
     """Top-level dots.tts config holding all submodule configs + shared constants."""
 
@@ -214,6 +236,7 @@ class ModelConfig:
     encoder: EncoderConfig = field(default_factory=EncoderConfig)
     vocoder: VocoderConfig = field(default_factory=VocoderConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    quantization: "QuantizationConfig | None" = None
 
     @classmethod
     def from_checkpoint(cls, path: str | Path) -> "ModelConfig":
@@ -225,6 +248,7 @@ class ModelConfig:
             llm_cfg = json.load(f)
 
         voc = cfg.get("vocoder", {})
+        q = cfg.get("quantization")
         return cls(
             latent_dim=int(cfg.get("latent_dim", 128)),
             patch_size=int(cfg.get("patch_size", 4)),
@@ -238,4 +262,5 @@ class ModelConfig:
             encoder=EncoderConfig.from_dict(cfg.get("PatchEncoder", {})),
             vocoder=VocoderConfig.from_dict(voc),
             llm=LLMConfig.from_dict(llm_cfg),
+            quantization=QuantizationConfig.from_dict(q) if q else None,
         )
