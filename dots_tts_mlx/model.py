@@ -479,6 +479,13 @@ class DotsTtsModel:
             prompt_text = profile.prompt_text  # rebuild the identical schedule
             use_prompt_prefill = True
             # speaker_scale is already baked into profile.g_cond; the arg is ignored here.
+            # RNG sync: the ref-audio path consumes exactly one mx.random.normal draw in
+            # io.sample_from_latent (the VAE-latent sampling) before the decode loop. The
+            # profile path skips that encode, so replicate the single RNG advance here —
+            # MLX's global RNG advances per-call (shape-independent), so the decode-loop
+            # noise then matches one-shot generate exactly (byte-parity). Do NOT remove:
+            # the round-trip parity gate (test_profile_generate_matches_one_shot) depends on it.
+            mx.random.normal((1,))
         else:
             prompt_audio48k = None
             if prompt_audio is not None:

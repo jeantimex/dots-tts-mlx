@@ -111,6 +111,7 @@ def test_profile_generate_matches_one_shot(tmp_path):
     a = np.asarray(one_shot["audio"].astype(mx.float32)).ravel()
     b = np.asarray(via["audio"].astype(mx.float32)).ravel()
     assert a.shape == b.shape, (a.shape, b.shape)
+    assert np.max(np.abs(a)) > 0.01, "one-shot output is silence — parity test is meaningless"
     assert np.max(np.abs(a - b)) < 1e-3, float(np.max(np.abs(a - b)))
 
 
