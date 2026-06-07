@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dots-tts-mlx"
+version = "0.1.0"
+description = "Pure-MLX port of rednote-hilab/dots.tts — multilingual zero-shot voice-clone TTS on Apple Silicon"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Shraey Bhatia" }]
+keywords = ["mlx", "tts", "text-to-speech", "voice-cloning", "apple-silicon", "dots.tts", "flow-matching"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: GPU",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mlx",
+    "mlx-lm",
+    "numpy",
+    "soundfile",
+    "tokenizers",
+]
+
+[project.optional-dependencies]
+# Offline weight conversion (dots_tts_mlx.convert) + the dev parity oracle (tools/oracle.py).
+# These pull in torch and are NOT needed for the MLX runtime.
+oracle = [
+    "torch>=2.8",
+    "transformers>=4.57",
+    "torchdiffeq",
+    "safetensors",
+]
+
+[project.scripts]
+dots-tts = "dots_tts_mlx.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/shraeybhatia/dots-tts-mlx"
+"Upstream model" = "https://huggingface.co/rednote-hilab/dots.tts"
+
+[tool.setuptools]
+packages = ["dots_tts_mlx"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: end-to-end tests that load the full model (skip with -m 'not slow')",
+]

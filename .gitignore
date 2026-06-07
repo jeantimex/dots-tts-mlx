@@ -1,0 +1,22 @@
+# Weights + generated audio (large, not tracked)
+weights/
+outputs/
+
+# Test fixtures (dumped by tools/oracle.py; large, regenerable)
+tests/fixtures/
+
+# NumPy archives (parity fixtures)
+*.npz
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.egg-info/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
