@@ -98,6 +98,32 @@ The converter folds the vocoder's `weight_norm` (80 pairs), passes the speaker B
 
 > Note: only the converted artifacts are needed to run; the original checkpoint + `[oracle]` extra can be removed afterward.
 
+### Quantized weights (smaller download)
+
+The ~9 GB fp32 directory can be shrunk with `python -m dots_tts_mlx.quantize`, which quantizes **only
+the Qwen2.5 LLM trunk** (70% of the weights) and keeps the precision-sensitive flow-matching DiT, the
+BigVGAN vocoder, and the CAM++ speaker at bf16. The output is a self-contained directory that loads
+exactly like the fp32 one — the loader auto-detects the `quantization` block in `config.json`, so no
+flags change at inference time.
+
+```bash
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx --out weights/dots_tts_mlx_int4 --bits 4
+#   --bits 16 → bf16 (no quantization)   --bits 8 → int8-LLM   --bits 4 → int4-LLM   (--group-size 64)
+```
+
+Validated on a 5-language clone (EN/DE/ES/FR ship + HI preview) from one English reference:
+
+| Variant | Download | WER (EN/DE/ES/FR / HI) | speaker-SIM |
+|---------|----------|------------------------|-------------|
+| fp32 | ~8.9 GB | — | — |
+| bf16 (runtime dtype) | ~4.5 GB | 0.00 / 0.105 | 0.71–0.83 |
+| int8-LLM | ~3.1 GB | 0.00 / 0.105 | 0.69–0.82 |
+| **int4-LLM** | **~2.4 GB** | **0.00 / 0.105** | 0.68–0.80 |
+
+WER is identical at every precision; speaker-SIM differences sit within run-to-run measurement noise.
+**int4-LLM (~2.4 GB, −73%) is the recommended download**, with int8 as a conservative fallback. The
+quantizer requires only `mlx` + `mlx-lm` (no torch).
+
 ## CLI usage
 
 ```bash
