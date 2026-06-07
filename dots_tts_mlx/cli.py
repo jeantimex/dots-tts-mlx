@@ -74,11 +74,12 @@ def _clean_onset(wav: np.ndarray, sr: int) -> np.ndarray:
     return y
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """Build and return the CLI argument parser."""
     ap = argparse.ArgumentParser(description="dots.tts-MLX voice-cloning TTS")
     ap.add_argument("--model", default="weights/dots_tts_mlx")
-    ap.add_argument("--text", required=True)
-    ap.add_argument("--ref-audio", required=True)
+    ap.add_argument("--text", default=None)
+    ap.add_argument("--ref-audio", default=None)
     ap.add_argument(
         "--ref-text",
         default=None,
@@ -118,21 +119,74 @@ def main() -> int:
         action="store_false",
         help="disable onset-transient trimming (keep the raw vocoder output verbatim).",
     )
+    ap.add_argument(
+        "--enroll",
+        action="store_true",
+        help="enrollment mode: compute a reusable SpeakerProfile from --ref-audio/--ref-text.",
+    )
+    ap.add_argument(
+        "--profile-out",
+        default=None,
+        help="(enroll mode) directory to write the .dtprofile bundle to.",
+    )
+    ap.add_argument(
+        "--profile",
+        default=None,
+        help="(use mode) a .dtprofile to clone from — replaces --ref-audio/--ref-text.",
+    )
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
     args = ap.parse_args()
+
+    if args.enroll:
+        if not args.ref_audio or not args.ref_text or not args.profile_out:
+            ap.error("--enroll requires --ref-audio, --ref-text, and --profile-out")
+        model = from_pretrained(args.model, dtype=mx.bfloat16).model
+        prof = model.enroll(args.ref_audio, args.ref_text, speaker_scale=args.speaker_scale)
+        prof.save(args.profile_out)
+        print(
+            f"[dots] enrolled -> {args.profile_out}  "
+            f"({prof.prompt_patch_count} prompt patches, scale {prof.speaker_scale})  "
+            f"MLX peak {mx.get_peak_memory() / (1 << 30):.2f}GB",
+            flush=True,
+        )
+        return 0
+
+    if not args.text:
+        ap.error("--text is required for generation")
 
     model = from_pretrained(args.model, dtype=mx.bfloat16).model
 
-    out = model.generate(
-        text=args.text,
-        prompt_audio=args.ref_audio,
-        prompt_text=args.ref_text,
-        num_steps=args.num_steps,
-        guidance_scale=args.guidance_scale,
-        speaker_scale=args.speaker_scale,
-        language=args.language,
-        seed=args.seed,
-        max_generate_length=args.max_generate_length,
-    )
+    if args.profile:
+        from dots_tts_mlx.profile import SpeakerProfile
+
+        prof = SpeakerProfile.load(args.profile)
+        out = model.generate(
+            text=args.text,
+            profile=prof,
+            num_steps=args.num_steps,
+            guidance_scale=args.guidance_scale,
+            language=args.language,
+            seed=args.seed,
+            max_generate_length=args.max_generate_length,
+        )
+    else:
+        if not args.ref_audio:
+            ap.error("--ref-audio is required (or pass --profile)")
+        out = model.generate(
+            text=args.text,
+            prompt_audio=args.ref_audio,
+            prompt_text=args.ref_text,
+            num_steps=args.num_steps,
+            guidance_scale=args.guidance_scale,
+            speaker_scale=args.speaker_scale,
+            language=args.language,
+            seed=args.seed,
+            max_generate_length=args.max_generate_length,
+        )
 
     wav = np.asarray(out["audio"].astype(mx.float32)).ravel()
     sr = int(out["sample_rate"])
