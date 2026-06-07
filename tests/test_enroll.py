@@ -100,6 +100,13 @@ def test_profile_generate_matches_one_shot(tmp_path):
 
     one_shot = m.generate(text, prompt_audio=str(REF), prompt_text=REF_TEXT, **kw)
 
+    # The reference encoding is stochastic (upstream samples the VAE posterior:
+    # z = mean + randn*exp(log_std)). The one-shot above seeds 42 internally, so its
+    # prompt sample is seed-42's first draw. To compare the CACHE against that exact
+    # encoding, enroll must draw its prompt sample from the same RNG state — seed 42
+    # here so the cached artifacts match. (In production a profile just captures one
+    # fixed sample and is reused as-is; this seeding only makes the parity check exact.)
+    mx.random.seed(42)
     prof = m.enroll(str(REF), REF_TEXT, speaker_scale=1.5)
     p = tmp_path / "v.dtprofile"
     prof.save(p)
