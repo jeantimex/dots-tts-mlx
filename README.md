@@ -51,7 +51,11 @@ EN/DE/ES/FR are ship-tier (0.0 WER on short, clean, in-domain sentences — bett
 Requires Python ≥ 3.10 on Apple Silicon (MLX is Metal-only).
 
 ```bash
-git clone <this-repo> dots-tts-mlx
+# quickest — install the published release directly:
+pip install "git+https://github.com/sb1992/dots-tts-mlx.git@v0.1.0"
+
+# or, for development (editable):
+git clone https://github.com/sb1992/dots-tts-mlx.git
 cd dots-tts-mlx
 pip install -e .
 ```
