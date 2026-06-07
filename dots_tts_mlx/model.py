@@ -170,6 +170,13 @@ def _trim_silence(x: np.ndarray, top_db: float = 30.0) -> np.ndarray:
     return x[start:end]
 
 
+def _load_prompt_audio48k(prompt_audio: str | Path, sample_rate: int) -> np.ndarray:
+    """Load + trim + resample a prompt wav to mono 48 kHz (the generate/enroll preamble)."""
+    raw, sr = _load_wav_mono(prompt_audio)
+    raw = _trim_silence(raw, top_db=30.0)
+    return _resample(raw, sr, sample_rate)
+
+
 # ---------------------------------------------------------------------------
 # xvec_proj = Linear(512 -> 1024) -> affine LayerNorm(1024).
 # ---------------------------------------------------------------------------
@@ -244,6 +251,8 @@ class DotsTtsModel:
         self.latent_dim = latent_dim
         self.dtype = dtype
         self.sample_rate = 48000
+        self._model_dir: Path | None = None
+        self._compat_hash: str | None = None
 
     # region construction
     @classmethod
@@ -298,7 +307,7 @@ class DotsTtsModel:
         # pad-multiple is patch_size * hop_size (= 7680). latent_dim from config.
         hop_size = math.prod(config.vocoder.upsample_rates)
 
-        return cls(
+        model = cls(
             tokenizer=tokenizer,
             llm=llm,
             vae=vae,
@@ -314,6 +323,11 @@ class DotsTtsModel:
             latent_dim=config.latent_dim,
             dtype=dtype,
         )
+        from .profile import model_compat_hash
+
+        model._model_dir = path
+        model._compat_hash = model_compat_hash(path)
+        return model
 
     # endregion construction
 
@@ -442,12 +456,9 @@ class DotsTtsModel:
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
 
-        # --- load prompt audio, resample to 48k mono, trim. ---
         prompt_audio48k = None
         if prompt_audio is not None:
-            raw, sr = _load_wav_mono(prompt_audio)
-            raw = _trim_silence(raw, top_db=30.0)
-            prompt_audio48k = _resample(raw, sr, self.sample_rate)
+            prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
 
         use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
 
@@ -659,6 +670,51 @@ class DotsTtsModel:
         probs = mx.softmax(logits.astype(mx.float32), axis=-1)
         eos_p = float(probs[0, -1, 1])
         return eos_p > eos_threshold
+
+    def enroll(
+        self,
+        prompt_audio: str | Path,
+        prompt_text: str,
+        *,
+        speaker_scale: float = 1.5,
+    ) -> "SpeakerProfile":  # noqa: F821
+        """Compute + return a reusable SpeakerProfile for ``prompt_audio``.
+
+        Caches the target-independent reference artifacts (g_cond, the AudioVAE-encoded
+        prompt latents, and the patch-encoder embeddings). ``prompt_text`` is REQUIRED —
+        it is stored so a later ``generate(profile=…)`` rebuilds the identical schedule.
+        """
+        from .profile import SpeakerProfile
+
+        if not prompt_text:
+            raise ValueError("enroll() requires a non-empty prompt_text (the reference transcript).")
+        if self._compat_hash is None:
+            raise ValueError("enroll() requires a model built via from_pretrained (no compat hash).")
+
+        prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
+        g_cond, prompt_patches, prompt_denorm_latents = self._prepare_prompt_conditioning(
+            prompt_audio48k, use_prompt_prefill=True, speaker_scale=speaker_scale
+        )
+        s = int(prompt_patches.shape[1])
+        flat = prompt_patches.reshape(1, s * self.patch_size, self.latent_dim)
+        patch_emb = self.patch_encoder(flat).astype(self.dtype)
+        mx.eval(g_cond, prompt_patches, prompt_denorm_latents, patch_emb)
+
+        return SpeakerProfile(
+            g_cond=g_cond,
+            prompt_patches=prompt_patches,
+            prompt_denorm_latents=prompt_denorm_latents,
+            patch_emb=patch_emb,
+            prompt_text=prompt_text,
+            prompt_patch_count=s,
+            speaker_scale=float(speaker_scale),
+            latent_dim=self.latent_dim,
+            patch_size=self.patch_size,
+            hop_size=self.hop_size,
+            sample_rate=self.sample_rate,
+            dtype=str(self.dtype).split(".")[-1],
+            compat_hash=self._compat_hash,
+        )
 
     def _prefill(
         self,

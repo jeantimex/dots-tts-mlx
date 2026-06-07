@@ -64,3 +64,28 @@ def test_prefill_patch_emb_passthrough():
     h_pre, fm_pre = run(precomputed)
     assert np.array_equal(np.asarray(h_none.astype(mx.float32)), np.asarray(h_pre.astype(mx.float32)))
     assert np.array_equal(np.asarray(fm_none.astype(mx.float32)), np.asarray(fm_pre.astype(mx.float32)))
+
+
+@pytest.mark.skipif(not REF.exists(), reason="reference wav absent (set $DOTS_TTS_REF)")
+def test_enroll_builds_profile(tmp_path):
+    from dots_tts_mlx.profile import SpeakerProfile
+
+    m = _model()
+    prof = m.enroll(str(REF), REF_TEXT, speaker_scale=1.5)
+    assert isinstance(prof, SpeakerProfile)
+    s = prof.prompt_patch_count
+    assert s > 0
+    assert tuple(prof.g_cond.shape) == (1, 1024)
+    assert tuple(prof.prompt_patches.shape) == (1, s, m.patch_size, m.latent_dim)
+    assert tuple(prof.patch_emb.shape) == (1, s, 1536)
+    assert prof.prompt_text == REF_TEXT
+    assert prof.compat_hash == m._compat_hash
+    out = tmp_path / "v.dtprofile"
+    prof.save(out)
+    SpeakerProfile.load(out).check_compat(m._compat_hash)
+
+
+def test_enroll_requires_prompt_text():
+    m = _model()
+    with pytest.raises(ValueError, match="prompt_text"):
+        m.enroll(str(REF), "")
