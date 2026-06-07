@@ -107,3 +107,38 @@ def test_compat_hash_sensitive_to_nonllm_core(tmp_path):
     a = _fake_model_dir(tmp_path / "a")
     b = _fake_model_dir(tmp_path / "b", extra_core={"patch_encoder.w2": _mx.zeros((8, 8))})
     assert model_compat_hash(a) != model_compat_hash(b)
+
+
+def test_compat_hash_ignores_ondisk_float_dtype(tmp_path):
+    """Same architecture + values, different on-disk float dtype (F32 vs BF16) -> same hash.
+
+    Both dirs load+cast to the runtime dtype, so they produce identical artifacts and a
+    profile must be portable between them (e.g. the bf16 dir stores F32, the int4 dir
+    stores BF16 for the non-LLM components)."""
+    import json as _j
+
+    import mlx.core as _mx
+    import numpy as _np
+
+    from dots_tts_mlx.profile import model_compat_hash
+
+    def build(d, core_dtype):
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "config.json").write_text(_j.dumps({"latent_dim": 128, "patch_size": 4,
+                                                  "vocoder": {"sample_rate": 48000}}))
+        _np.savez(d / "latent_stats.npz", mean=_np.zeros(128, _np.float32),
+                  std=_np.ones(128, _np.float32))
+        _mx.save_safetensors(str(d / "core.safetensors"), {
+            "velocity_field_predictor.w": _mx.zeros((4, 4)).astype(core_dtype),
+            "patch_encoder.w": _mx.zeros((4, 4)).astype(core_dtype),
+            "llm.model.layers.0.w": _mx.zeros((4, 4)),  # excluded by prefix
+        })
+        _mx.save_safetensors(str(d / "speaker.safetensors"),
+                             {"s": _mx.zeros((2, 2)).astype(core_dtype)})
+        _mx.save_safetensors(str(d / "vocoder.safetensors"),
+                             {"v": _mx.zeros((2, 2)).astype(core_dtype)})
+        return d
+
+    a = build(tmp_path / "f32", _mx.float32)
+    b = build(tmp_path / "bf16", _mx.bfloat16)
+    assert model_compat_hash(a) == model_compat_hash(b)

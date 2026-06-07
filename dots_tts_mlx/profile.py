@@ -87,7 +87,7 @@ class SpeakerProfile:
 
 
 def _safetensors_signature(path: str | Path, exclude_prefixes: tuple[str, ...] = ()) -> list:
-    """Sorted ``[(name, dtype, shape)]`` from a safetensors header — metadata only, no
+    """Sorted ``[(name, shape)]`` from a safetensors header — metadata only, no
     tensor reads. ``exclude_prefixes`` drops e.g. the quantized ``llm.`` tensors."""
     path = Path(path)
     with open(path, "rb") as f:
@@ -99,7 +99,12 @@ def _safetensors_signature(path: str | Path, exclude_prefixes: tuple[str, ...] =
             continue
         if any(name.startswith(p) for p in exclude_prefixes):
             continue
-        sig.append((name, meta["dtype"], tuple(meta["shape"])))
+        # NB: dtype is intentionally excluded — non-LLM float components are stored at
+        # different on-disk dtypes across variants (bf16 dir: F32; int4/int8 dirs: BF16)
+        # but load+cast to the same runtime dtype, yielding identical artifacts. Keying on
+        # (name, shape) keeps profiles portable across quant variants while still pinning
+        # the model architecture; config.json + latent_stats values pin the rest.
+        sig.append((name, tuple(meta["shape"])))
     return sig
 
 
