@@ -89,3 +89,37 @@ def test_enroll_requires_prompt_text():
     m = _model()
     with pytest.raises(ValueError, match="prompt_text"):
         m.enroll(str(REF), "")
+
+
+@pytest.mark.skipif(not REF.exists(), reason="reference wav absent (set $DOTS_TTS_REF)")
+def test_profile_generate_matches_one_shot(tmp_path):
+    """enroll -> save -> load -> generate(profile) == one-shot generate(ref) (same seed)."""
+    m = _model()
+    text = "Hello from the enrolled voice."
+    kw = dict(num_steps=6, guidance_scale=1.2, speaker_scale=1.5, language="EN", seed=42)
+
+    one_shot = m.generate(text, prompt_audio=str(REF), prompt_text=REF_TEXT, **kw)
+
+    prof = m.enroll(str(REF), REF_TEXT, speaker_scale=1.5)
+    p = tmp_path / "v.dtprofile"
+    prof.save(p)
+    from dots_tts_mlx.profile import SpeakerProfile
+
+    loaded = SpeakerProfile.load(p)
+    via = m.generate(text, profile=loaded, num_steps=6, guidance_scale=1.2, language="EN", seed=42)
+
+    a = np.asarray(one_shot["audio"].astype(mx.float32)).ravel()
+    b = np.asarray(via["audio"].astype(mx.float32)).ravel()
+    assert a.shape == b.shape, (a.shape, b.shape)
+    assert np.max(np.abs(a - b)) < 1e-3, float(np.max(np.abs(a - b)))
+
+
+def test_profile_mutual_exclusion():
+    m = _model()
+    if not REF.exists():
+        pytest.skip("reference wav absent")
+    prof = m.enroll(str(REF), REF_TEXT)
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        m.generate("x", profile=prof, prompt_audio=str(REF))
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        m.generate("x", profile=prof, prompt_text="y")

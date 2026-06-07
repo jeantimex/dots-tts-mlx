@@ -440,6 +440,7 @@ class DotsTtsModel:
         *,
         prompt_audio: str | Path | None = None,
         prompt_text: str | None = None,
+        profile: "SpeakerProfile | None" = None,  # noqa: F821
         num_steps: int = 10,
         guidance_scale: float = 1.2,
         speaker_scale: float = 1.5,
@@ -456,19 +457,40 @@ class DotsTtsModel:
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
 
-        prompt_audio48k = None
-        if prompt_audio is not None:
-            prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
-
-        use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
-
-        g_cond, prompt_patches, prompt_denorm_latents = (
-            self._prepare_prompt_conditioning(
-                prompt_audio48k,
-                use_prompt_prefill=use_prompt_prefill,
-                speaker_scale=speaker_scale,
+        # --- prompt conditioning: from a saved profile, or computed from prompt_audio. ---
+        patch_emb_override = None
+        if profile is not None:
+            if prompt_audio is not None or prompt_text is not None:
+                raise ValueError(
+                    "generate(profile=…) is mutually exclusive with prompt_audio/prompt_text."
+                )
+            if self._compat_hash is not None:
+                profile.check_compat(self._compat_hash)
+            # integrity: the cached patch_emb must line up with the prompt patches.
+            if (
+                int(profile.prompt_patches.shape[1]) != profile.prompt_patch_count
+                or int(profile.patch_emb.shape[1]) != profile.prompt_patch_count
+            ):
+                raise ValueError("corrupt speaker profile: prompt_patch_count mismatch.")
+            g_cond = profile.g_cond.astype(self.dtype)
+            prompt_patches = profile.prompt_patches.astype(self.dtype)
+            prompt_denorm_latents = profile.prompt_denorm_latents.astype(self.dtype)
+            patch_emb_override = profile.patch_emb.astype(self.dtype)
+            prompt_text = profile.prompt_text  # rebuild the identical schedule
+            use_prompt_prefill = True
+            # speaker_scale is already baked into profile.g_cond; the arg is ignored here.
+        else:
+            prompt_audio48k = None
+            if prompt_audio is not None:
+                prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
+            use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
+            g_cond, prompt_patches, prompt_denorm_latents = (
+                self._prepare_prompt_conditioning(
+                    prompt_audio48k,
+                    use_prompt_prefill=use_prompt_prefill,
+                    speaker_scale=speaker_scale,
+                )
             )
-        )
         prompt_patch_count = 0 if prompt_patches is None else int(prompt_patches.shape[1])
 
         # --- build the generation schedule. ---
@@ -518,6 +540,7 @@ class DotsTtsModel:
             span_positions=span_positions,
             prompt_patches=prompt_patches,
             cache=cache,
+            patch_emb=patch_emb_override,
         )
         llm_hiddens = self._last_prefill_hidden
 
