@@ -14,7 +14,9 @@ HEAVY (loads the full model + runs the AR decode + Whisper once). Selectable via
 ``-m slow``; skips if weights/fixtures are absent.
 """
 
+import importlib.util
 import json
+import os
 import pathlib
 
 import numpy as np
@@ -26,13 +28,25 @@ mx.set_memory_limit(int(45 * (1 << 30)))
 
 W = pathlib.Path("weights/dots_tts_mlx")
 CFG = pathlib.Path("tests/fixtures/dots_tts/golden_config.json")
-WHISPER = pathlib.Path("weights/whisper-large-v3-mlx")
+# MLX-Whisper weights are used only for the intelligibility (WER) check. Path is
+# env-overridable so the e2e gate can find a Whisper install outside the default.
+WHISPER = pathlib.Path(os.environ.get("DOTS_TTS_WHISPER", "weights/whisper-large-v3-mlx"))
 OUT_DIR = pathlib.Path("outputs/dots_tts/e2e")
+
+_HAS_MLX_WHISPER = importlib.util.find_spec("mlx_whisper") is not None
 
 pytestmark = [
     pytest.mark.slow,
     pytest.mark.skipif(
         not (W.exists() and CFG.exists()), reason="weights or golden config absent"
+    ),
+    pytest.mark.skipif(
+        not _HAS_MLX_WHISPER,
+        reason="mlx_whisper not installed (intelligibility gate unavailable)",
+    ),
+    pytest.mark.skipif(
+        not WHISPER.exists(),
+        reason=f"MLX-Whisper weights absent at {WHISPER} (set $DOTS_TTS_WHISPER)",
     ),
 ]
 

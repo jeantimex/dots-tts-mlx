@@ -4,7 +4,25 @@ A pure-[MLX](https://github.com/ml-explore/mlx) port of [`rednote-hilab/dots.tts
 
 dots.tts is a **2B-parameter, fully continuous, end-to-end autoregressive flow-matching** TTS model (the `dots.tts-soar` SCA checkpoint). Unlike discrete-codec TTS models that warm up from a quantized token stream, dots.tts is continuous AR — so the **first patch is already a crisp utterance onset**, with no warm-up mumble at sample 0. It clones a voice from a short reference clip and synthesizes into 24 languages.
 
-This repo is a clean-room MLX reimplementation of the runtime: no PyTorch in the inference path, gated per-stage against the original PyTorch model.
+This repo is a clean-room MLX reimplementation of the runtime: no PyTorch calls in the inference path, gated per-stage against the original PyTorch model.
+
+## Scope — what this is / isn't
+
+This is a **converted-weight MLX inference runtime** for the `dots.tts-soar` (SCA) checkpoint. It deliberately does **not** replicate upstream's full surface. It **is**:
+
+- a from-scratch MLX port of the dots.tts inference math, numerically gated against the original PyTorch model;
+- a CLI + Python API that synthesizes from a **local, already-converted** weights directory.
+
+It is **not** a drop-in replacement for the upstream package. In particular, this runtime does **not**:
+
+- **auto-download by HF repo id** — you point it at a local converted directory (see [Weights](#weights)); there is no hub fetch baked into the runtime;
+- **auto-detect language or resolve language names** — pass an **explicit uppercase ISO code** (e.g. `HI`, `ES`, `EN`), not `auto_detect` or a spelled-out name;
+- **normalize text** — there is no `--normalize-text`; feed already-normalized input;
+- **support random / no-reference sampling** — a reference clip (`--ref-audio`) is required for the voice clone;
+- **ship a Gradio app** — CLI + Python API only;
+- **do fine-tuning or training** — inference only.
+
+If you need any of those, use the upstream project: [code](https://github.com/rednote-hilab/dots.tts) · [model](https://huggingface.co/rednote-hilab/dots.tts-soar).
 
 ## What it is
 
@@ -43,8 +61,18 @@ The runtime deps are `mlx`, `mlx-lm`, `numpy`, `soundfile`, `tokenizers`. The `d
 For **weight conversion** and the **dev parity oracle** (both use PyTorch), install the extra:
 
 ```bash
-pip install -e '.[oracle]'   # torch, transformers, torchdiffeq, safetensors
+pip install -e '.[oracle]'   # torch, transformers, torchdiffeq, safetensors, librosa, torchaudio
 ```
+
+Two distinct workflows use this extra — don't conflate them:
+
+- **Weight conversion** (`python -m dots_tts_mlx.convert`) needs only `torch` + `safetensors` + `numpy` (a subset of `[oracle]`). It does **not** need the upstream package.
+- **Regenerating parity fixtures** (`tools/oracle.py`) needs the full `[oracle]` extra **and** the upstream `dots_tts` package, which is **not on PyPI** — install it separately from source:
+
+  ```bash
+  pip install -e /path/to/dots.tts
+  # or: pip install "git+https://github.com/rednote-hilab/dots.tts"
+  ```
 
 `ffmpeg` is needed only if you use `--speed` (post-hoc time-stretch).
 
@@ -127,7 +155,7 @@ Every stage was gated numerically against the original PyTorch model (a dev-only
 
 **The tf32 finding — why the end-to-end test is behavioral, not sample-exact.** MLX's fast matmul rounds fp32 operands to ~tf32 (10-bit mantissa) on the GPU. The per-stage gates sidestep this with an explicit high-precision path. But the euler ODE in the flow solver *amplifies* the per-step DiT matmul tf32 floor (fast-path max-abs 0.577 vs the true-fp32 floor of 1.4e-4), so across 10 integration steps × N patches the trajectory diverges enough that the waveform does **not** sample-align with the PyTorch golden. This is a runtime-precision property, not a port bug — sample-exact e2e parity isn't reachable on this hardware path. So the e2e gate is **behavioral**: WER 0.0 / SIM 0.829 / finite / right duration / clean onset confirm the output is *correct*. The component-level numerics prove the math; the behavioral gate proves the product.
 
-Tests live in `tests/` (pytest). They skip cleanly when the converted weights or PyTorch fixtures are absent. Regenerate fixtures with `tools/oracle.py` under the `[oracle]` extra.
+Tests live in `tests/` (pytest). They skip cleanly when the converted weights or PyTorch fixtures are absent. Regenerate fixtures with `tools/oracle.py` under the `[oracle]` extra **plus** the upstream `dots_tts` package installed from source (`pip install -e /path/to/dots.tts`) — see [Install](#install).
 
 ## Limitations
 
@@ -136,6 +164,17 @@ Tests live in `tests/` (pytest). They skip cleanly when the converted weights or
 - **No native speech-rate knob** — dots.tts is a self-pacing AR model; pacing is controlled post-hoc via `--speed` (ffmpeg time-stretch).
 - **Apple Silicon only** — MLX is Metal-only.
 - While the runtime makes **no torch calls**, `torch`/`transformers` may be resident transitively via `mlx-lm`'s tokenizer utilities. The inference math is pure MLX.
+
+## Responsible use
+
+This runtime performs **zero-shot voice cloning** — it can reproduce a person's voice from a few seconds of reference audio. That capability carries real risk of misuse. By using this software you agree to use it responsibly. Mirroring the upstream [dots.tts-soar risks guidance](https://huggingface.co/rednote-hilab/dots.tts-soar):
+
+- **No impersonation, fraud, or disinformation.** Do not use cloned voices to impersonate real people without authorization, to commit fraud or social engineering, to evade voice-based authentication, or to produce misleading or deceptive content.
+- **Consent for reference audio.** Only clone a voice you own or for which you have the speaker's explicit, informed consent. Respect the rights of voice owners and applicable privacy / publicity / data-protection laws in your jurisdiction.
+- **Disclose AI-generated audio.** Clearly label synthesized speech as AI-generated wherever it is published or shared, so listeners are never misled about its origin.
+- **Watermark + detect downstream.** You are encouraged to apply audio watermarking to generated output and to deploy synthetic-speech detection in any pipeline that ingests it, to support provenance and abuse mitigation.
+
+The authors and contributors disclaim responsibility for misuse. Comply with all applicable laws and with the upstream model's license and usage terms.
 
 ## Attribution + licenses
 

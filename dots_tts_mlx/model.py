@@ -1,7 +1,9 @@
 """AR orchestration for the dots.tts MLX runtime — ``DotsTtsModel.generate``.
 
-Imports ONLY mlx / numpy / stdlib (+ this package). NEVER torch. Audio I/O is WAV
-via stdlib ``wave`` + numpy; resampling is a numpy Kaiser-windowed-sinc that mirrors
+Imports mlx / numpy / stdlib (+ this package) and makes no torch calls. (torch +
+transformers are pulled in transitively via mlx-lm; the math here is pure MLX.)
+Audio I/O is WAV via stdlib ``wave`` + numpy; resampling is a numpy
+Kaiser-windowed-sinc that mirrors
 torchaudio ``sinc_interp_kaiser`` (lowpass_filter_width=64, rolloff=0.95) to ~1e-6.
 
 Ties every pure-MLX submodule (LLM trunk + eos head, AudioVAE encode/decode,
@@ -46,7 +48,7 @@ from pathlib import Path
 import mlx.core as mx
 import numpy as np
 
-# Hard 45 GB ceiling (CLAUDE.md): set BEFORE any heavy allocation.
+# Memory-ceiling safety guard: set BEFORE any heavy allocation.
 mx.set_memory_limit(int(45 * (1 << 30)))
 
 from .dit import FlowSolver  # noqa: E402

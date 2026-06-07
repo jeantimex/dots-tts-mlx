@@ -19,7 +19,9 @@ cache equals a single full-sequence forward (mlx-lm's RoPE offsets off ``cache.o
 ``eos_proj`` is a tiny ``Linear(1536,1536) -> SiLU -> Linear(1536,2)`` head; the decode
 uses ``softmax(eos_proj(hidden))[..., 1] > 0.8`` for EOS.
 
-Imports ONLY mlx + mlx_lm — never torch. The Qwen2.5 config (vocab 151672, hidden
+Imports mlx + mlx_lm and makes no torch calls. (Importing mlx_lm pulls in
+torch + transformers transitively for its tokenizer utilities; this module never
+calls into them.) The Qwen2.5 config (vocab 151672, hidden
 1536, 28 layers, 12 heads, 2 kv-heads/GQA, rope_theta 1e6, rms_norm_eps 1e-6, tied
 embeddings) is read verbatim from the saved ``llm_config.json``; mlx-lm handles the
 GQA / RoPE / norm details from those args. Loaded fp32 for parity (MLX fast matmul

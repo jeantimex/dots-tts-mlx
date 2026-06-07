@@ -5,7 +5,12 @@ This script MAY import torch / dots_tts. It is used to enumerate checkpoint
 weight keys and (in later tasks) dump reference fixtures that the pure-MLX
 runtime is gated against. It is never part of the shipped MLX runtime.
 
-Requires the ``[oracle]`` extra (torch / transformers / torchdiffeq / safetensors).
+Requires the ``[oracle]`` extra (torch / transformers / torchdiffeq /
+safetensors / librosa / torchaudio) AND the upstream ``dots_tts`` package, which
+is NOT on PyPI — install it separately from the source repo:
+    pip install -e /path/to/dots.tts
+    # or: pip install "git+https://github.com/rednote-hilab/dots.tts"
+
 Run from the repo root, e.g.:
     python tools/oracle.py keys --src weights/dots_tts_src/dots.tts-soar
 
@@ -975,7 +980,7 @@ def main(argv: list[str] | None = None) -> int:
     add_common_args(p_enc)
     p_enc.add_argument(
         "--wav",
-        default="outputs/xdub_len/voice_short6s.wav",
+        required=True,
         help="reference wav (resampled to 48 kHz mono fp32)",
     )
     p_enc.add_argument(
@@ -1067,7 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
     add_common_args(p_spk)
     p_spk.add_argument(
         "--wav",
-        default="outputs/xdub_len/aud_5s.wav",
+        required=True,
         help="reference wav (resampled to 16 kHz mono fp32 for the gate)",
     )
     p_spk.add_argument(

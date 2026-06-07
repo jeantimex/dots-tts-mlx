@@ -33,13 +33,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Offline weight conversion (dots_tts_mlx.convert) + the dev parity oracle (tools/oracle.py).
-# These pull in torch and are NOT needed for the MLX runtime.
+# The dev parity oracle (tools/oracle.py): regenerates the PyTorch reference
+# fixtures the MLX runtime is gated against. NOT needed for the MLX runtime.
+# Regenerating fixtures ALSO requires the upstream dots.tts package, which is
+# not on PyPI — install it separately from the source repo:
+#   pip install -e /path/to/dots.tts
+#   # or: pip install "git+https://github.com/rednote-hilab/dots.tts"
+# (Offline weight conversion, dots_tts_mlx.convert, needs only torch + safetensors
+# + numpy — a strict subset of these; it does NOT need transformers/torchdiffeq/
+# librosa/torchaudio or the upstream package.)
 oracle = [
     "torch>=2.8",
     "transformers>=4.57",
     "torchdiffeq",
     "safetensors",
+    "librosa",
+    "torchaudio",
 ]
 
 [project.scripts]

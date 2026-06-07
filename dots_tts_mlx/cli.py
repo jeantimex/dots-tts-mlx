@@ -3,8 +3,9 @@
 A continuous autoregressive flow-matching model: clean utterance onset, no discrete-codec
 warm-up mumble. Writes ``{out-path}/{out-prefix}_000.wav`` @ 48 kHz.
 
-Pure-MLX runtime: imports ONLY mlx / numpy / soundfile + ``dots_tts_mlx`` (NEVER
-torch / transformers / librosa).
+Runtime code imports only mlx / numpy / soundfile + ``dots_tts_mlx`` and makes no
+torch calls. (torch + transformers are present transitively via mlx-lm — same as
+the wider MLX-audio ecosystem — but the inference math is pure MLX.)
 
 Usage:
     dots-tts --text "..." --ref-audio ref.wav \
@@ -19,7 +20,7 @@ import argparse
 
 import mlx.core as mx
 
-mx.set_memory_limit(int(45 * (1 << 30)))  # repo ceiling — set BEFORE heavy alloc
+mx.set_memory_limit(int(45 * (1 << 30)))  # memory-ceiling safety guard — set BEFORE heavy alloc
 
 import os  # noqa: E402
 import subprocess  # noqa: E402

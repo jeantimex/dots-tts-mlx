@@ -1,7 +1,7 @@
 """MLX runtime loader for dots.tts.
 
-Pure-MLX (no torch). Sets the 45 GB memory guard at import (CLAUDE.md mandate),
-then provides a ``DotsTts`` container + ``from_pretrained`` that loads the config,
+Sets a generous MLX memory ceiling at import as a safety guard, then provides a
+``DotsTts`` container + ``from_pretrained`` that loads the config,
 latent stats, tokenizer dir, and validates the three converted safetensors.
 
 Submodule wiring (instantiating the DiT / encoder / vocoder / speaker / LLM and
@@ -16,7 +16,7 @@ from pathlib import Path
 
 import mlx.core as mx
 
-# Hard 45 GB ceiling (CLAUDE.md): set BEFORE any heavy allocation.
+# Memory-ceiling safety guard: set BEFORE any heavy allocation.
 mx.set_memory_limit(int(45 * (1 << 30)))
 
 from .audiovae import (  # noqa: E402  (must follow the memory guard)
