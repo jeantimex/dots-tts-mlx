@@ -176,6 +176,42 @@ wav = mx.array(out["audio"]).astype(mx.float32)   # mono float32
 sr = out["sample_rate"]                            # 48000
 ```
 
+## Enroll once, reuse a voice
+
+Compute a voice's reference conditioning **once**, save it to disk, and reuse it for every
+later generation — so you never re-pass the reference, and the expensive reference encode
+(CAM++ x-vector + the AudioVAE encode of the reference + the patch-encoder pass) is paid
+**once at enrollment** instead of on every call.
+
+```bash
+# 1. enroll a voice -> a reusable .dtprofile bundle
+dots-tts --enroll --ref-audio reference.wav \
+    --ref-text "transcript of reference.wav" --profile-out alice.dtprofile
+
+# 2. generate from the profile — no --ref-audio / --ref-text needed
+dots-tts --profile alice.dtprofile --text "Hello from the enrolled voice." \
+    --language EN --out-prefix clone
+```
+
+```python
+profile = model.enroll("reference.wav", "transcript of reference.wav", speaker_scale=1.5)
+profile.save("alice.dtprofile")                       # cond.safetensors + profile.json (<2 MB)
+
+from dots_tts_mlx.profile import SpeakerProfile
+profile = SpeakerProfile.load("alice.dtprofile")
+out = model.generate("Hello from the enrolled voice.", profile=profile, language="EN")
+```
+
+- **Footprint:** profile generation skips the reference re-encode every call, dropping the
+  steady-state peak from ~10.8 GB to **~6.6 GB** (−39%, near the x-vector-only floor). The
+  ~10 GB enrollment peak is paid once.
+- **Output is identical** to the equivalent one-shot `generate(prompt_audio=…, prompt_text=…)`.
+- **Portable across precisions:** a profile enrolled on int4 also loads on int8 / bf16
+  (the cached conditioning comes from bf16-only components). Loading against a different
+  model raises a clear error.
+- `--enroll` requires `--ref-text`; `--profile` is mutually exclusive with `--ref-audio`/`--ref-text`.
+  (X-vector-only clones — no `--ref-text` — are already cheap at ~6 GB and need no profile.)
+
 ## How it was ported / parity
 
 Every stage was gated numerically against the original PyTorch model (a dev-only oracle, `tools/oracle.py`, dumps reference fixtures) before any behavioral test. Each gate uses a manual high-precision fp32 reference matmul so a single component's parity is isolated from the runtime's reduced-precision matmul:
