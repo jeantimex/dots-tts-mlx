@@ -103,7 +103,8 @@ download; int8 is the conservative fallback.
 **Quality.** Quantization is validated to be **lossless relative to the full-precision MLX build**: on a
 small multilingual acceptance check (EN/DE/ES/FR + Hindi), int8 and int4 showed no transcription-accuracy
 or voice-similarity regression vs bf16. This is a sanity check, **not a dataset-scale benchmark** —
-evaluate on your own content. (Correctness of the port itself is gated per-stage against the original
+evaluate on your own content. (Those 5 are only the quant-validation subset; the model supports all
+**24 languages** of upstream dots.tts.) (Correctness of the port itself is gated per-stage against the original
 PyTorch model — see [How it was ported / parity](#how-it-was-ported--parity).)
 
 > **Why no bf16 download?** bf16 is the runtime dtype (the full-precision reference), but it showed no
