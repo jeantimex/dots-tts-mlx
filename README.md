@@ -197,7 +197,6 @@ Tests live in `tests/` (pytest). They skip cleanly when the converted weights or
 
 ## Limitations
 
-- **Hindi is preview-tier** — correct and usable, but slightly higher error on the low-resource tail, as the paper predicts. EN/DE/ES/FR are ship-tier.
 - **Memory:** ~10 GB resident at bf16 (dominated by the resident Qwen2.5 backbone + DiT); fp32 parity runs land ~2× that.
 - **No native speech-rate knob** — dots.tts is a self-pacing AR model; pacing is controlled post-hoc via `--speed` (ffmpeg time-stretch).
 - **Apple Silicon only** — MLX is Metal-only.
