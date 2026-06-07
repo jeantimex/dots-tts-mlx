@@ -195,12 +195,13 @@ Every stage was gated numerically against the original PyTorch model (a dev-only
 
 Tests live in `tests/` (pytest). They skip cleanly when the converted weights or PyTorch fixtures are absent. Regenerate fixtures with `tools/oracle.py` under the `[oracle]` extra **plus** the upstream `dots_tts` package installed from source (`pip install -e /path/to/dots.tts`) — see [Install](#install).
 
-## Limitations
+## Requirements & notes
 
-- **Memory:** ~10 GB resident at bf16 (dominated by the resident Qwen2.5 backbone + DiT); fp32 parity runs land ~2× that.
-- **No native speech-rate knob** — dots.tts is a self-pacing AR model; pacing is controlled post-hoc via `--speed` (ffmpeg time-stretch).
-- **Apple Silicon only** — MLX is Metal-only.
-- While the runtime makes **no torch calls**, `torch`/`transformers` may be resident transitively via `mlx-lm`'s tokenizer utilities. The inference math is pure MLX.
+These are specifics of *this MLX port* — not limitations of the model itself, which behaves the same as upstream dots.tts.
+
+- **Apple Silicon only** — MLX is Metal-only (the upstream PyTorch model targets CUDA).
+- **Footprint:** ~10 GB RAM at bf16, or ~6 GB with a short (2–3 s) reference. This is inherent to the 2B model (same class as upstream), not specific to this port; fp32 runs land ~2×.
+- The runtime makes **no torch calls**, though `torch` / `transformers` are pulled in transitively by `mlx-lm`'s tokenizer utilities — the inference math is pure MLX.
 
 ## Responsible use
 
