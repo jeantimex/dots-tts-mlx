@@ -1,6 +1,6 @@
 # dots-tts-mlx
 
-A pure-[MLX](https://github.com/ml-explore/mlx) port of [`rednote-hilab/dots.tts`](https://huggingface.co/rednote-hilab/dots.tts) — multilingual zero-shot voice-clone text-to-speech, running natively on Apple Silicon.
+A pure-[MLX](https://github.com/ml-explore/mlx) port of [`rednote-hilab/dots.tts`](https://github.com/rednote-hilab/dots.tts) — multilingual zero-shot voice-clone text-to-speech, running natively on Apple Silicon.
 
 dots.tts is a **2B-parameter, fully continuous, end-to-end autoregressive flow-matching** TTS model (the `dots.tts-soar` SCA checkpoint). Unlike discrete-codec TTS models that warm up from a quantized token stream, dots.tts is continuous AR — so the **first patch is already a crisp utterance onset**, with no warm-up mumble at sample 0. It clones a voice from a short reference clip and synthesizes into 24 languages.
 

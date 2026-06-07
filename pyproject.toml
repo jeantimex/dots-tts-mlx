@@ -56,7 +56,8 @@ dots-tts = "dots_tts_mlx.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/sb1992/dots-tts-mlx"
-"Upstream model" = "https://huggingface.co/rednote-hilab/dots.tts"
+"Upstream code" = "https://github.com/rednote-hilab/dots.tts"
+"Upstream model" = "https://huggingface.co/rednote-hilab/dots.tts-soar"
 
 [tool.setuptools]
 packages = ["dots_tts_mlx"]
