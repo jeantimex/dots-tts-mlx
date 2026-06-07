@@ -70,3 +70,8 @@ target-version = "py310"
 markers = [
     "slow: end-to-end tests that load the full model (skip with -m 'not slow')",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+]

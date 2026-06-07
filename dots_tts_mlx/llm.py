@@ -76,6 +76,7 @@ class DotsLLM:
         core_safetensors: str,
         llm_config_json: str,
         dtype: mx.Dtype = mx.float32,
+        quantization: "object | None" = None,  # QuantizationConfig | None
     ) -> "DotsLLM":
         """Build the Qwen2.5 trunk + eos head and bind ``core.safetensors`` weights.
 
@@ -105,10 +106,21 @@ class DotsLLM:
 
         raw = mx.load(str(core_safetensors))
         llm_weights = {
-            k[len(_LLM_PREFIX) :]: v.astype(dtype)
+            k[len(_LLM_PREFIX) :]: (v if v.dtype == mx.uint32 else v.astype(dtype))
             for k, v in raw.items()
             if k.startswith(_LLM_PREFIX)
         }
+        if quantization is not None and "llm" in quantization.components:
+            has_scales = any(k.endswith(".scales") for k in llm_weights)
+            if not has_scales:
+                raise ValueError(
+                    "config.json declares the llm is quantized, but core.safetensors "
+                    "has no '.scales' tensors — the weights and the quantization block "
+                    "disagree. Re-run `python -m dots_tts_mlx.quantize`."
+                )
+            nn.quantize(
+                model, group_size=quantization.group_size, bits=quantization.bits
+            )
         # ``sanitize`` drops a tied ``lm_head.weight`` if present and any unused
         # rotary buffers; our keys have neither, so it is a no-op safeguard.
         llm_weights = model.sanitize(llm_weights)
