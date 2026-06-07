@@ -668,6 +668,7 @@ class DotsTtsModel:
         span_positions: list[int],
         prompt_patches: mx.array | None,
         cache,
+        patch_emb: mx.array | None = None,
     ) -> int:
         """Run the prefill forward + walk the prompt spans. Returns ``prefill_end``.
 
@@ -690,10 +691,14 @@ class DotsTtsModel:
             # The prompt_patches reshape is [1, S, patch_size, 128]; flatten the time
             # axis back to [1, S*patch_size, 128] for the encoder, which downsamples
             # by patch_size to [1, S, 1536].
-            flat = prompt_patches.reshape(
-                1, prompt_patch_count * self.patch_size, self.latent_dim
-            )
-            patch_emb = self.patch_encoder(flat).astype(inputs_embeds.dtype)  # [1, S, 1536]
+            # patch_emb is supplied by the profile path (precomputed at enroll); else
+            # recompute it here — numerically identical, so the ref-audio path is unchanged.
+            if patch_emb is None:
+                flat = prompt_patches.reshape(
+                    1, prompt_patch_count * self.patch_size, self.latent_dim
+                )
+                patch_emb = self.patch_encoder(flat)
+            patch_emb = patch_emb.astype(inputs_embeds.dtype)  # [1, S, 1536]
             # scatter into the prompt span slots.
             idx = mx.array(prompt_span_positions, dtype=mx.int32)
             inputs_embeds[:, idx, :] = patch_emb[:, :prompt_patch_count, :]
