@@ -44,7 +44,7 @@ Cloned into 5 languages from **one English reference** (`--num-steps 10 --guidan
 
 EN/DE/ES/FR are ship-tier (0.0 WER on short, clean, in-domain sentences — better than the dots.tts paper's quoted ~1–3.5% for these targets). Hindi at 0.105 WER is **preview-tier**: fully intelligible, with only minor diacritic/spelling slips that are phonetically correct. SIM 0.72–0.83 is strong; the English self-clone (0.830) is the ceiling, with cross-language transfer sitting just below as expected.
 
-24 languages are supported overall (the model's full coverage); the matrix above is the validated subset. See the parity + acceptance write-up for the full numbers and methodology.
+24 languages are supported overall (the model's full coverage); the matrix above is the validated subset. See [How it was ported / parity](#how-it-was-ported--parity) below for the per-stage gates and methodology.
 
 ## Install
 

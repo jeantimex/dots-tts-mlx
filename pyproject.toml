@@ -55,7 +55,7 @@ oracle = [
 dots-tts = "dots_tts_mlx.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/shraeybhatia/dots-tts-mlx"
+Homepage = "https://github.com/sb1992/dots-tts-mlx"
 "Upstream model" = "https://huggingface.co/rednote-hilab/dots.tts"
 
 [tool.setuptools]
