@@ -150,7 +150,7 @@ Key flags:
 - `--ref-audio` (required) — the voice to clone. `--ref-text` is the reference transcript; **omit it for an x-vector-only clone** (no prompt transcript).
 - `--language` — uppercase ISO code (`EN` / `DE` / `ES` / `FR` / `HI` / …). Default `None` = no language tag.
 - `--num-steps 10` `--guidance-scale 1.2` `--speaker-scale 1.5` `--seed 42` — flow-matching sampler knobs (defaults are the validated ship config).
-- `--speed 1.0` — playback tempo via pitch-preserving ffmpeg `atempo` (`<1` slower, `>1` faster). dots.tts is a self-pacing AR model with **no native rate control**, so this is a post-hoc time-stretch applied after onset-trim.
+- `--speed 1.0` — adjust playback tempo, **pitch-preserving** (ffmpeg `atempo`; `<1` slower, `>1` faster), applied after onset-trim.
 - `--trim-onset` / `--no-trim-onset` — `--trim-onset` is **on by default**: it removes the fixed ~50–150 ms BigVGAN vocoder onset transient (a soft "hhh"/breath at sample 0) via an energy gate + 10 ms anti-click fade. `--no-trim-onset` keeps the raw vocoder output verbatim.
 
 ## Python API
