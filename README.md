@@ -6,6 +6,8 @@ dots.tts is a **2B-parameter, fully continuous, end-to-end autoregressive flow-m
 
 This repo is a clean-room MLX reimplementation of the runtime: no PyTorch calls in the inference path, gated per-stage against the original PyTorch model.
 
+> **Ready-to-run weights** are published on Hugging Face — [`shraey/dots-tts-mlx`](https://huggingface.co/shraey/dots-tts-mlx). **Download and run — no PyTorch and no conversion step.** The int4 build is **~2.4 GB vs the original ~9 GB (−73%)**, with **essentially identical quality in our acceptance tests**. `pip install` the runtime, `hf download` the weights, and go — see [Weights](#weights).
+
 ## Scope — what this is / isn't
 
 This is a **converted-weight MLX inference runtime** for the `dots.tts-soar` (SCA) checkpoint. It deliberately does **not** replicate upstream's full surface. It **is**:
@@ -82,47 +84,66 @@ Two distinct workflows use this extra — don't conflate them:
 
 ## Weights
 
-The MLX runtime needs converted weights — convert the original checkpoint once:
+Two ways to get runnable MLX weights — **most people want Option A.**
+
+### Option A — download ready MLX weights (recommended)
+
+Pre-converted, pre-quantized MLX weights are published at
+[`shraey/dots-tts-mlx`](https://huggingface.co/shraey/dots-tts-mlx). **No PyTorch, no conversion** —
+download the variant you want and point the runtime at it:
 
 ```bash
-# 1. Download the original checkpoint from Hugging Face (~9 GB of safetensors).
-huggingface-cli download rednote-hilab/dots.tts-soar --local-dir weights/dots_tts_src/dots.tts-soar
+# int4 — recommended (~2.4 GB, −73% vs the original ~9 GB)
+hf download shraey/dots-tts-mlx --include "int4/*" --local-dir ./dots-tts-mlx-weights
+# files land in ./dots-tts-mlx-weights/int4/ — point --model there:
+dots-tts --model ./dots-tts-mlx-weights/int4 --text "Hello from MLX." --ref-audio ref.wav --language EN
 
-# 2. Convert HF -> MLX fp32 safetensors (needs the [oracle] extra for torch).
-python -m dots_tts_mlx.convert \
-    --src weights/dots_tts_src/dots.tts-soar \
-    --out weights/dots_tts_mlx
+# int8 — conservative fallback (~3.1 GB): same, with --include "int8/*" and --model .../int8
 ```
 
-The converter folds the vocoder's `weight_norm` (80 pairs), passes the speaker BN buffers through, extracts `latent_stats`, and copies the config + tokenizer alongside the weights. Output is **fp32 MLX safetensors (~9 GB on disk)**; at runtime the loader casts to **bf16 (~10 GB resident)**. fp32 parity runs use roughly 2× that.
+The downloaded folder is self-contained and loads exactly like an unquantized one — the runtime
+auto-detects the `quantization` block in `config.json`, so nothing changes at the CLI/API level.
 
-> Note: only the converted artifacts are needed to run; the original checkpoint + `[oracle]` extra can be removed afterward.
+**Sizes + quality** (validated on a 5-language clone — EN/DE/ES/FR + Hindi — from one English reference):
 
-### Quantized weights (smaller download)
+| Variant | Download | vs original | WER (EN/DE/ES/FR / HI) | speaker-SIM |
+|---------|----------|-------------|------------------------|-------------|
+| original `dots.tts-soar` (PyTorch) | ~9 GB | — | — | — |
+| **int4-LLM** ⭐ | **~2.4 GB** | **−73%** | **0.00 / 0.105** | 0.68–0.80 |
+| int8-LLM | ~3.1 GB | −65% | 0.00 / 0.105 | 0.69–0.82 |
 
-The ~9 GB fp32 directory can be shrunk with `python -m dots_tts_mlx.quantize`, which quantizes **only
-the Qwen2.5 LLM trunk** (70% of the weights) and keeps the precision-sensitive flow-matching DiT, the
-BigVGAN vocoder, and the CAM++ speaker at bf16. The output is a self-contained directory that loads
-exactly like the fp32 one — the loader auto-detects the `quantization` block in `config.json`, so no
-flags change at inference time.
+Only the **Qwen2.5 LLM trunk** (≈70% of the weights) is quantized; the precision-sensitive
+flow-matching DiT, the BigVGAN vocoder, and the CAM++ speaker stay bf16. **WER is identical to the
+full-precision build at both int8 and int4**, and speaker-similarity differences are within run-to-run
+measurement noise. int4 is the recommended download; int8 is the conservative fallback.
+
+> **Honest caveat:** this is a **5-language acceptance set, not a full-corpus WER benchmark.** It shows
+> quantization is essentially lossless on these targets — it is not a claim of dataset-scale parity.
+
+> **Why no bf16 download?** bf16 is the runtime dtype (the lossless reference), but it gave no quality
+> gain over int4 in our tests at ~2× the size — so we don't host it. Produce it locally with
+> `--bits 16` (Option B) if you want the full-precision reference.
+
+### Option B — convert from source (advanced)
+
+For reproducibility, re-quantizing, or auditing, convert the original checkpoint yourself (needs the
+`[oracle]` extra for torch):
 
 ```bash
+# 1. Download the original checkpoint (~9 GB).
+hf download rednote-hilab/dots.tts-soar --local-dir weights/dots_tts_src/dots.tts-soar
+
+# 2. Convert HF -> MLX fp32 safetensors.
+python -m dots_tts_mlx.convert --src weights/dots_tts_src/dots.tts-soar --out weights/dots_tts_mlx
+
+# 3. (optional) Quantize the LLM trunk — --bits {16,8,4}  (16 = bf16, no quantization; --group-size 64)
 python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx --out weights/dots_tts_mlx_int4 --bits 4
-#   --bits 16 → bf16 (no quantization)   --bits 8 → int8-LLM   --bits 4 → int4-LLM   (--group-size 64)
 ```
 
-Validated on a 5-language clone (EN/DE/ES/FR ship + HI preview) from one English reference:
-
-| Variant | Download | WER (EN/DE/ES/FR / HI) | speaker-SIM |
-|---------|----------|------------------------|-------------|
-| fp32 | ~8.9 GB | — | — |
-| bf16 (runtime dtype) | ~4.5 GB | 0.00 / 0.105 | 0.71–0.83 |
-| int8-LLM | ~3.1 GB | 0.00 / 0.105 | 0.69–0.82 |
-| **int4-LLM** | **~2.4 GB** | **0.00 / 0.105** | 0.68–0.80 |
-
-WER is identical at every precision; speaker-SIM differences sit within run-to-run measurement noise.
-**int4-LLM (~2.4 GB, −73%) is the recommended download**, with int8 as a conservative fallback. The
-quantizer requires only `mlx` + `mlx-lm` (no torch).
+`convert` folds the vocoder's `weight_norm` (80 pairs), passes the speaker BN buffers through, extracts
+`latent_stats`, and copies the config + tokenizer. Output is fp32 (~9 GB); the loader casts to bf16 at
+runtime. `quantize` needs only `mlx` + `mlx-lm` (no torch). Only the converted/quantized artifacts are
+needed to run — the original checkpoint + `[oracle]` extra can be removed afterward.
 
 ## CLI usage
 
