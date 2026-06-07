@@ -8,6 +8,7 @@ stdlib; no torch.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,3 +84,45 @@ class SpeakerProfile:
                 f"(profile hash {self.compat_hash[:12]}…, current model {model_hash[:12]}…) — "
                 "re-enroll the voice on the current model."
             )
+
+
+def _safetensors_signature(path: str | Path, exclude_prefixes: tuple[str, ...] = ()) -> list:
+    """Sorted ``[(name, dtype, shape)]`` from a safetensors header — metadata only, no
+    tensor reads. ``exclude_prefixes`` drops e.g. the quantized ``llm.`` tensors."""
+    path = Path(path)
+    with open(path, "rb") as f:
+        n = int.from_bytes(f.read(8), "little")
+        header = json.loads(f.read(n).decode("utf-8"))
+    sig = []
+    for name, meta in sorted(header.items()):
+        if name == "__metadata__":
+            continue
+        if any(name.startswith(p) for p in exclude_prefixes):
+            continue
+        sig.append((name, meta["dtype"], tuple(meta["shape"])))
+    return sig
+
+
+def model_compat_hash(model_dir: str | Path) -> str:
+    """Hash the artifact-producing components of a converted model dir.
+
+    Pins config dims + latent-stats normalization + the AudioVAE / CAM++ / patch-encoder
+    / projection tensor signatures (the bf16 components that produce profile artifacts).
+    EXCLUDES the ``quantization`` config block and all ``llm.`` tensors, so a profile is
+    portable across int4 / int8 / bf16.
+    """
+    model_dir = Path(model_dir)
+    h = hashlib.sha256()
+
+    cfg = json.loads((model_dir / "config.json").read_text())
+    cfg.pop("quantization", None)  # quant-independent
+    h.update(json.dumps(cfg, sort_keys=True).encode("utf-8"))
+    h.update((model_dir / "latent_stats.npz").read_bytes())
+
+    sigs = {
+        "core": _safetensors_signature(model_dir / "core.safetensors", exclude_prefixes=("llm.",)),
+        "speaker": _safetensors_signature(model_dir / "speaker.safetensors"),
+        "vocoder": _safetensors_signature(model_dir / "vocoder.safetensors"),
+    }
+    h.update(json.dumps(sigs, sort_keys=True, default=list).encode("utf-8"))
+    return h.hexdigest()
