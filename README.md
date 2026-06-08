@@ -39,7 +39,7 @@ Requires Python ≥ 3.10 on Apple Silicon (MLX is Metal-only).
 
 ```bash
 # quickest — install the published release directly:
-pip install "git+https://github.com/sb1992/dots-tts-mlx.git@v0.3.0"
+pip install "git+https://github.com/sb1992/dots-tts-mlx.git@v0.3.1"
 
 # or, for development (editable):
 git clone https://github.com/sb1992/dots-tts-mlx.git
