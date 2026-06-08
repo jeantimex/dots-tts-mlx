@@ -1,4 +1,6 @@
-from dots_tts_mlx.chunking import resolve_max_chars, split_for_generation
+import numpy as np
+
+from dots_tts_mlx.chunking import assemble_chunks, resolve_max_chars, split_for_generation
 
 
 def test_sentence_split_latin():
@@ -72,3 +74,25 @@ def test_resolve_max_chars_script_aware():
 
 def test_empty_text_returns_empty():
     assert split_for_generation("   ", max_chars=240, language="EN") == []
+
+
+def test_assemble_chunks_length_and_gaps():
+    sr = 48000
+    a = np.ones(sr, dtype=np.float32)        # 1.0s
+    b = np.ones(sr // 2, dtype=np.float32)   # 0.5s
+    gap_ms = 80
+    out = assemble_chunks([a, b], sr, gap_ms)
+    gap_samples = int(sr * gap_ms / 1000)
+    assert out.shape[0] == a.size + gap_samples + b.size   # gap BETWEEN, not after
+    assert float(np.abs(out[a.size:a.size + gap_samples]).max()) == 0.0
+
+
+def test_assemble_chunks_single_no_gap():
+    sr = 48000
+    a = np.ones(100, dtype=np.float32)
+    out = assemble_chunks([a], sr, 80)
+    assert out.shape[0] == 100   # no trailing gap
+
+
+def test_assemble_chunks_empty():
+    assert assemble_chunks([], 48000, 80).shape[0] == 0
