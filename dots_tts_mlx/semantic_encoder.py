@@ -149,6 +149,29 @@ class VAESemanticEncoder:
         # (The conv's precision is fixed at construction via its own ``hp`` flag.)
         return self.ds_proj(x)
 
+    def _downsample_step(self, patch: mx.array, conv_tail: mx.array):
+        """Streaming causal stride-2 conv over one patch (NLC), conv-only (no in_proj).
+
+        Mirrors upstream ``_downsample_step``: prepend the carried left-context, run the
+        conv with padding=0 (the tail supplies the left context), and carry the new tail.
+        Returns ``(down [1, out_ds_rate, in_dim], new_conv_tail [1, left_padding, in_dim])``.
+        Numerically identical to ``_downsample`` over the concatenated stream because the
+        conv is causal and the tail reproduces its exact left-context.
+        """
+        conv_input = mx.concatenate([conv_tail, patch], axis=1)  # [1, lp+P, in_dim]
+        y = mx.conv1d(
+            conv_input,
+            self.ds_proj.weight,
+            stride=self.ds_proj.stride,
+            padding=0,
+            dilation=self.ds_proj.dilation,
+            groups=self.ds_proj.groups,
+        )
+        if self.ds_proj.bias is not None:
+            y = y + self.ds_proj.bias
+        new_conv_tail = patch[:, -self.ds_proj.left_padding:, :]
+        return y, new_conv_tail
+
     def _project_embeddings(self, z: mx.array, *, hp: bool) -> mx.array:
         if self.out_ds_rate > 1:
             b, sd, h = z.shape

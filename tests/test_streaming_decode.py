@@ -57,3 +57,26 @@ def test_init_decode_state_shapes():
     # one KVCache per encoder layer, all empty (offset 0).
     assert len(state.layer_caches) == 3
     assert all(c.offset == 0 for c in state.layer_caches)
+
+
+def test_downsample_step_equals_full_conv():
+    enc = _tiny_encoder(in_dim=4, patch_size=4, seed=7)
+    p = enc.patch_size
+    # Two patches of denormalized latents, fed as one full stream vs streamed per-patch.
+    x = _rand((1, 2 * p, 4), seed=99, scale=1.0)
+    full = enc._downsample(x)  # [1, 2*odr, 4] full causal conv (zero left-pad)
+
+    tail = mx.zeros((1, enc.ds_proj.left_padding, 4), dtype=mx.float32)
+    outs = []
+    for k in range(2):
+        patch = x[:, k * p:(k + 1) * p, :]
+        down, tail = enc._downsample_step(patch, tail)
+        outs.append(down)
+    streamed = mx.concatenate(outs, axis=1)  # [1, 2*odr, 4]
+
+    assert streamed.shape == full.shape
+    maxabs = float(mx.abs(streamed - full).max())
+    assert maxabs <= 1e-5, f"streaming conv diverged: max|Δ|={maxabs:.2e}"
+    # tail after the last patch == that patch's last left_padding frames.
+    last = x[:, -enc.ds_proj.left_padding:, :]
+    assert float(mx.abs(tail - last).max()) == 0.0
