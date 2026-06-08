@@ -492,6 +492,7 @@ class DotsTtsModel:
         max_generate_length: int = 500,
         eos_threshold: float = 0.8,
         trim_onset: bool = True,
+        streaming_decode: bool = True,
     ) -> dict:
         """Synthesize ``text`` (optionally cloning ``prompt_audio``) -> 48 kHz wav.
 
@@ -503,6 +504,13 @@ class DotsTtsModel:
         is applied here — not bolted onto the CLI — so EVERY caller (Python API, the
         persistent service, the CLI) gets clean audio by default. Pass ``trim_onset=False``
         for the raw vocoder output.
+
+        ``streaming_decode`` (default on) re-encodes each generated patch incrementally
+        through a maintained conv_tail + per-layer KV caches (O(n) over the clip).
+        ``streaming_decode=False`` selects the legacy recompute-full path (re-encodes the
+        full history every patch, O(n^3)) — kept as a fallback and the on-device parity
+        oracle. Both paths are numerically identical (the encoder is fully causal, no
+        rotary/qk-norm).
         """
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
@@ -590,6 +598,21 @@ class DotsTtsModel:
                 )
 
         cache = self.llm.make_cache()
+
+        # Streaming patch-decode state (default path). Prefill it from the SAME
+        # denormalized prompt stream that seeds the recompute-full history above, so the
+        # KV caches reflect recompute-full's prompt view. No RNG is drawn here (prefill is
+        # deterministic) -> streaming vs recompute-full stay in RNG lock-step.
+        self._streaming_decode = bool(streaming_decode)
+        self._patch_encoder_state = None
+        if self._streaming_decode:
+            self._patch_encoder_state = self.patch_encoder.init_decode_state(dtype=self.dtype)
+            if prompt_denorm_latents is not None and prompt_patch_count > 0:
+                self.patch_encoder.prefill(
+                    prompt_denorm_latents[:, : prompt_patch_count * self.patch_size],
+                    self._patch_encoder_state,
+                )
+
         llm_hiddens: mx.array | None = None
 
         # --- prefill. ---
@@ -740,6 +763,12 @@ class DotsTtsModel:
         O(n^2) over patches — fine for short clips; the faithful alternative to
         upstream's incremental decode_patch.
         """
+        if getattr(self, "_streaming_decode", False):
+            emb = self.patch_encoder.decode_patch(
+                denorm_patch, self._patch_encoder_state
+            ).astype(self.dtype)
+            return self.llm.step(inputs_embeds=emb, cache=cache)
+        # --- recompute-full fallback / parity oracle (kept verbatim, O(n^3)) ---
         self._denorm_patch_history.append(denorm_patch)
         history = mx.concatenate(self._denorm_patch_history, axis=1)  # [1, 4n, 128]
         emb_full = self.patch_encoder(history)  # [1, n, 1536]
