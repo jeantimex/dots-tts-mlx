@@ -177,6 +177,49 @@ def _load_prompt_audio48k(prompt_audio: str | Path, sample_rate: int) -> np.ndar
     return _resample(raw, sr, sample_rate)
 
 
+def _clean_onset(wav: np.ndarray, sr: int) -> np.ndarray:
+    """Trim the fixed BigVGAN vocoder onset transient off the start of a dots.tts clip.
+
+    dots.tts (via its BigVGAN vocoder) emits a deterministic ~50-150 ms low-level burst (a soft
+    "hhh"/breath, byte-identical across clips) at sample 0, followed by a short silence gap before
+    the real speech. It's a fixed ~-26 dBFS transient — on quiet dubs (peaks ~-20 dBFS) it's audible.
+
+    Mirrors ``clean_tts_audio._speech_bounds`` (smoothed-RMS gate + sustained-run requirement) to find
+    the *real* speech onset, then keeps ``[onset - lead_pad, end]``. Differences vs the MisoTTS cleaner:
+    a tighter ``rel_db`` (12, not 16) and lighter smoothing (40 ms, not 150) so the threshold sits
+    cleanly *between* the low transient and the louder speech body — the wide 16 dB / 150 ms gate would
+    flag the transient itself as "speech" (it's within 16 dB of the body) and trim nothing. The lead-pad
+    is kept small (30 ms) so a soft real onset consonant is never clipped; the transient + dead-air gap
+    that precede the speech are both removed. A 10 ms fade-in suppresses the cut click.
+
+    Pure numpy (no torch/MLX). Returns the trimmed-and-faded mono float32 array.
+    """
+    rel_db, hop_ms, smooth_ms, run_ms = 12.0, 10.0, 40.0, 60.0
+    lead_pad_ms, fade_ms = 30.0, 10.0
+    x = wav.astype(np.float32)
+    if x.ndim > 1:
+        x = x.mean(1)
+    hop = max(1, int(sr * hop_ms / 1000))
+    n = max(1, (len(x) - hop) // hop)
+    rms = np.array([np.sqrt((x[i * hop:i * hop + hop] ** 2).mean() + 1e-12) for i in range(n)])
+    db = 20 * np.log10(rms + 1e-9)
+    k = max(1, int(smooth_ms / hop_ms))
+    sm = np.convolve(db, np.ones(k) / k, mode="same")     # light smooth — keep transient/speech distinct
+    above = sm > (sm.max() - rel_db)
+    run = max(1, int(run_ms / hop_ms))                    # require a sustained run (not the burst's edge)
+    ok = np.convolve(above.astype(int), np.ones(run, dtype=int), mode="valid") == run
+    starts = np.where(ok)[0]
+    if len(starts) == 0:                                  # nothing looked like speech -> leave untouched
+        return x
+    s0 = int(starts[0] * hop)
+    i0 = max(0, s0 - int(lead_pad_ms / 1000 * sr))        # small lead-pad: never clip the first phoneme
+    y = x[i0:].copy()
+    nf = min(int(sr * fade_ms / 1000), len(y) // 2)       # anti-click fade-in at the cut
+    if nf > 0:
+        y[:nf] *= np.linspace(0.0, 1.0, nf, dtype=y.dtype)
+    return y
+
+
 # ---------------------------------------------------------------------------
 # xvec_proj = Linear(512 -> 1024) -> affine LayerNorm(1024).
 # ---------------------------------------------------------------------------
@@ -448,11 +491,18 @@ class DotsTtsModel:
         seed: int = 42,
         max_generate_length: int = 500,
         eos_threshold: float = 0.8,
+        trim_onset: bool = True,
     ) -> dict:
         """Synthesize ``text`` (optionally cloning ``prompt_audio``) -> 48 kHz wav.
 
         Returns ``{"audio": mx.array [1, T], "sample_rate": 48000,
         "num_patches": int}``.
+
+        ``trim_onset`` (default on) removes the fixed ~50-150 ms BigVGAN vocoder onset
+        transient (a soft "hhh"/breath at sample 0) via an energy gate + 10 ms fade. It
+        is applied here — not bolted onto the CLI — so EVERY caller (Python API, the
+        persistent service, the CLI) gets clean audio by default. Pass ``trim_onset=False``
+        for the raw vocoder output.
         """
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
@@ -466,10 +516,12 @@ class DotsTtsModel:
                 )
             if self._compat_hash is not None:
                 profile.check_compat(self._compat_hash)
-            # integrity: the cached patch_emb must line up with the prompt patches.
+            # integrity: the cached arrays must line up with prompt_patch_count.
             if (
                 int(profile.prompt_patches.shape[1]) != profile.prompt_patch_count
                 or int(profile.patch_emb.shape[1]) != profile.prompt_patch_count
+                or int(profile.prompt_denorm_latents.shape[1])
+                != profile.prompt_patch_count * self.patch_size
             ):
                 raise ValueError("corrupt speaker profile: prompt_patch_count mismatch.")
             g_cond = profile.g_cond.astype(self.dtype)
@@ -640,6 +692,9 @@ class DotsTtsModel:
         wav = self.vae.decode(latents.transpose(0, 2, 1))  # [1, 1, T*1920]
         wav = wav[:, 0, :]  # [1, T*1920]
         mx.eval(wav)
+        if trim_onset:
+            cleaned = _clean_onset(np.asarray(wav[0].astype(mx.float32)), self.sample_rate)
+            wav = mx.array(cleaned)[None]  # [1, T']
         return {
             "audio": wav,
             "sample_rate": self.sample_rate,
