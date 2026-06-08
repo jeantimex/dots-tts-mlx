@@ -13,7 +13,8 @@ This repo is a clean-room MLX reimplementation of the runtime: no PyTorch calls 
 This is a **converted-weight MLX inference runtime** for the `dots.tts-soar` (SCA) checkpoint. It deliberately does **not** replicate upstream's full surface. It **is**:
 
 - a from-scratch MLX port of the dots.tts inference math, numerically gated against the original PyTorch model;
-- a CLI + Python API that synthesizes from a **local, already-converted** weights directory.
+- a CLI + Python API that synthesizes from a **local, already-converted** weights directory;
+- a small **runtime addition not present upstream**: [enroll a voice once](#enroll-once-reuse-a-voice) and reuse it — the reference encode is paid once, then every generation runs at a lower memory peak (upstream re-encodes the reference on every call).
 
 It is **not** a drop-in replacement for the upstream package. In particular, this runtime does **not**:
 
@@ -175,6 +176,49 @@ out = model.generate(
 wav = mx.array(out["audio"]).astype(mx.float32)   # mono float32
 sr = out["sample_rate"]                            # 48000
 ```
+
+## Enroll once, reuse a voice
+
+Compute a voice's reference conditioning **once**, save it to disk, and reuse it for every
+later generation — so you never re-pass the reference, and the expensive reference encode
+(CAM++ x-vector + the AudioVAE encode of the reference + the patch-encoder pass) is paid
+**once at enrollment** instead of on every call.
+
+```bash
+# 1. enroll a voice -> a reusable .dtprofile bundle
+dots-tts --enroll --ref-audio reference.wav \
+    --ref-text "transcript of reference.wav" --profile-out alice.dtprofile
+
+# 2. generate from the profile — no --ref-audio / --ref-text needed
+dots-tts --profile alice.dtprofile --text "Hello from the enrolled voice." \
+    --language EN --out-prefix clone
+```
+
+```python
+profile = model.enroll("reference.wav", "transcript of reference.wav", speaker_scale=1.5)
+profile.save("alice.dtprofile")                       # cond.safetensors + profile.json (<2 MB)
+
+from dots_tts_mlx.profile import SpeakerProfile
+profile = SpeakerProfile.load("alice.dtprofile")
+out = model.generate("Hello from the enrolled voice.", profile=profile, language="EN")
+```
+
+- **Footprint:** profile generation skips the reference re-encode every call, dropping the
+  steady-state peak from ~10.8 GB to **~6.6 GB** (−39%, near the x-vector-only floor). The
+  ~10 GB enrollment peak is paid once.
+- **Output is identical** to the equivalent one-shot `generate(prompt_audio=…, prompt_text=…)`.
+- **Portable across precisions:** a profile enrolled on int4 also loads on int8 / bf16
+  (the cached conditioning comes from bf16-only components). Loading against a different
+  model raises a clear error.
+- `--enroll` requires `--ref-text`; `--profile` is mutually exclusive with `--ref-audio`/`--ref-text`.
+  (X-vector-only clones — no `--ref-text` — are already cheap at ~6 GB and need no profile.)
+
+> **Why this exists / not in upstream.** Upstream `dots.tts` has no enroll/profile concept — it
+> re-encodes the reference (CAM++ x-vector + the AudioVAE encode + the patch-encoder pass) on **every**
+> `generate`, and that encode is the ~10 GB memory high-water. This is a thin **runtime/app-layer**
+> addition for Apple Silicon: do that work once, persist the small result (<2 MB), and skip it on every
+> later call — so steady-state generation fits in **~6.6 GB instead of ~10.8 GB** and is faster, with
+> **bit-identical** output. It does not change the model or the inference math.
 
 ## How it was ported / parity
 

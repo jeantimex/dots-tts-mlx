@@ -19,13 +19,10 @@ W = pathlib.Path("weights/dots_tts_mlx")
 REF = pathlib.Path(os.environ.get("DOTS_TTS_REF", "tests/fixtures/ref.wav"))
 OUT_DIR = pathlib.Path("outputs/dots_tts/smoke")
 
-pytestmark = [
-    pytest.mark.slow,
-    pytest.mark.skipif(
-        not ((W / "core.safetensors").exists() and REF.exists()),
-        reason="dots_tts weights or reference clip absent",
-    ),
-]
+_needs_weights = pytest.mark.skipif(
+    not ((W / "core.safetensors").exists() and REF.exists()),
+    reason="dots_tts weights or reference clip absent",
+)
 
 
 def _read_wav(path: pathlib.Path) -> tuple[np.ndarray, int]:
@@ -43,6 +40,8 @@ def _read_wav(path: pathlib.Path) -> tuple[np.ndarray, int]:
     return data, sr
 
 
+@pytest.mark.slow
+@_needs_weights
 def test_cli_smoke(tmp_path):
     prefix = "smoke_clone"
     out_dir = OUT_DIR
@@ -80,3 +79,15 @@ def test_cli_smoke(tmp_path):
     assert duration > 0.5, f"clip too short: {duration:.2f}s"
     assert np.all(np.isfinite(data)), "non-finite samples"
     assert float(np.max(np.abs(data))) <= 1.0, "samples exceed [-1, 1]"
+
+
+def test_enroll_flags_parse():
+    from dots_tts_mlx.cli import build_parser
+
+    ns = build_parser().parse_args(
+        ["--enroll", "--ref-audio", "r.wav", "--ref-text", "t", "--profile-out", "v.dtprofile"]
+    )
+    assert ns.enroll and ns.profile_out == "v.dtprofile"
+
+    ns2 = build_parser().parse_args(["--profile", "v.dtprofile", "--text", "hi"])
+    assert ns2.profile == "v.dtprofile"

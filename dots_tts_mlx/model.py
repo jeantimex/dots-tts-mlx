@@ -170,6 +170,13 @@ def _trim_silence(x: np.ndarray, top_db: float = 30.0) -> np.ndarray:
     return x[start:end]
 
 
+def _load_prompt_audio48k(prompt_audio: str | Path, sample_rate: int) -> np.ndarray:
+    """Load + trim + resample a prompt wav to mono 48 kHz (the generate/enroll preamble)."""
+    raw, sr = _load_wav_mono(prompt_audio)
+    raw = _trim_silence(raw, top_db=30.0)
+    return _resample(raw, sr, sample_rate)
+
+
 # ---------------------------------------------------------------------------
 # xvec_proj = Linear(512 -> 1024) -> affine LayerNorm(1024).
 # ---------------------------------------------------------------------------
@@ -244,6 +251,8 @@ class DotsTtsModel:
         self.latent_dim = latent_dim
         self.dtype = dtype
         self.sample_rate = 48000
+        self._model_dir: Path | None = None
+        self._compat_hash: str | None = None
 
     # region construction
     @classmethod
@@ -298,7 +307,7 @@ class DotsTtsModel:
         # pad-multiple is patch_size * hop_size (= 7680). latent_dim from config.
         hop_size = math.prod(config.vocoder.upsample_rates)
 
-        return cls(
+        model = cls(
             tokenizer=tokenizer,
             llm=llm,
             vae=vae,
@@ -314,6 +323,11 @@ class DotsTtsModel:
             latent_dim=config.latent_dim,
             dtype=dtype,
         )
+        from .profile import model_compat_hash
+
+        model._model_dir = path
+        model._compat_hash = model_compat_hash(path)
+        return model
 
     # endregion construction
 
@@ -426,6 +440,7 @@ class DotsTtsModel:
         *,
         prompt_audio: str | Path | None = None,
         prompt_text: str | None = None,
+        profile: "SpeakerProfile | None" = None,  # noqa: F821
         num_steps: int = 10,
         guidance_scale: float = 1.2,
         speaker_scale: float = 1.5,
@@ -442,22 +457,47 @@ class DotsTtsModel:
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
 
-        # --- load prompt audio, resample to 48k mono, trim. ---
-        prompt_audio48k = None
-        if prompt_audio is not None:
-            raw, sr = _load_wav_mono(prompt_audio)
-            raw = _trim_silence(raw, top_db=30.0)
-            prompt_audio48k = _resample(raw, sr, self.sample_rate)
-
-        use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
-
-        g_cond, prompt_patches, prompt_denorm_latents = (
-            self._prepare_prompt_conditioning(
-                prompt_audio48k,
-                use_prompt_prefill=use_prompt_prefill,
-                speaker_scale=speaker_scale,
+        # --- prompt conditioning: from a saved profile, or computed from prompt_audio. ---
+        patch_emb_override = None
+        if profile is not None:
+            if prompt_audio is not None or prompt_text is not None:
+                raise ValueError(
+                    "generate(profile=…) is mutually exclusive with prompt_audio/prompt_text."
+                )
+            if self._compat_hash is not None:
+                profile.check_compat(self._compat_hash)
+            # integrity: the cached patch_emb must line up with the prompt patches.
+            if (
+                int(profile.prompt_patches.shape[1]) != profile.prompt_patch_count
+                or int(profile.patch_emb.shape[1]) != profile.prompt_patch_count
+            ):
+                raise ValueError("corrupt speaker profile: prompt_patch_count mismatch.")
+            g_cond = profile.g_cond.astype(self.dtype)
+            prompt_patches = profile.prompt_patches.astype(self.dtype)
+            prompt_denorm_latents = profile.prompt_denorm_latents.astype(self.dtype)
+            patch_emb_override = profile.patch_emb.astype(self.dtype)
+            prompt_text = profile.prompt_text  # rebuild the identical schedule
+            use_prompt_prefill = True
+            # speaker_scale is already baked into profile.g_cond; the arg is ignored here.
+            # RNG sync: the ref-audio path consumes exactly one mx.random.normal draw in
+            # io.sample_from_latent (the VAE-latent sampling) before the decode loop. The
+            # profile path skips that encode, so replicate the single RNG advance here —
+            # MLX's global RNG advances per-call (shape-independent), so the decode-loop
+            # noise then matches one-shot generate exactly (byte-parity). Do NOT remove:
+            # the round-trip parity gate (test_profile_generate_matches_one_shot) depends on it.
+            mx.random.normal((1,))
+        else:
+            prompt_audio48k = None
+            if prompt_audio is not None:
+                prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
+            use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
+            g_cond, prompt_patches, prompt_denorm_latents = (
+                self._prepare_prompt_conditioning(
+                    prompt_audio48k,
+                    use_prompt_prefill=use_prompt_prefill,
+                    speaker_scale=speaker_scale,
+                )
             )
-        )
         prompt_patch_count = 0 if prompt_patches is None else int(prompt_patches.shape[1])
 
         # --- build the generation schedule. ---
@@ -507,6 +547,7 @@ class DotsTtsModel:
             span_positions=span_positions,
             prompt_patches=prompt_patches,
             cache=cache,
+            patch_emb=patch_emb_override,
         )
         llm_hiddens = self._last_prefill_hidden
 
@@ -660,6 +701,51 @@ class DotsTtsModel:
         eos_p = float(probs[0, -1, 1])
         return eos_p > eos_threshold
 
+    def enroll(
+        self,
+        prompt_audio: str | Path,
+        prompt_text: str,
+        *,
+        speaker_scale: float = 1.5,
+    ) -> "SpeakerProfile":  # noqa: F821
+        """Compute + return a reusable SpeakerProfile for ``prompt_audio``.
+
+        Caches the target-independent reference artifacts (g_cond, the AudioVAE-encoded
+        prompt latents, and the patch-encoder embeddings). ``prompt_text`` is REQUIRED —
+        it is stored so a later ``generate(profile=…)`` rebuilds the identical schedule.
+        """
+        from .profile import SpeakerProfile
+
+        if not prompt_text:
+            raise ValueError("enroll() requires a non-empty prompt_text (the reference transcript).")
+        if self._compat_hash is None:
+            raise ValueError("enroll() requires a model built via from_pretrained (no compat hash).")
+
+        prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
+        g_cond, prompt_patches, prompt_denorm_latents = self._prepare_prompt_conditioning(
+            prompt_audio48k, use_prompt_prefill=True, speaker_scale=speaker_scale
+        )
+        s = int(prompt_patches.shape[1])
+        flat = prompt_patches.reshape(1, s * self.patch_size, self.latent_dim)
+        patch_emb = self.patch_encoder(flat).astype(self.dtype)
+        mx.eval(g_cond, prompt_patches, prompt_denorm_latents, patch_emb)
+
+        return SpeakerProfile(
+            g_cond=g_cond,
+            prompt_patches=prompt_patches,
+            prompt_denorm_latents=prompt_denorm_latents,
+            patch_emb=patch_emb,
+            prompt_text=prompt_text,
+            prompt_patch_count=s,
+            speaker_scale=float(speaker_scale),
+            latent_dim=self.latent_dim,
+            patch_size=self.patch_size,
+            hop_size=self.hop_size,
+            sample_rate=self.sample_rate,
+            dtype=str(self.dtype).split(".")[-1],
+            compat_hash=self._compat_hash,
+        )
+
     def _prefill(
         self,
         schedule_ids: list[int],
@@ -668,6 +754,7 @@ class DotsTtsModel:
         span_positions: list[int],
         prompt_patches: mx.array | None,
         cache,
+        patch_emb: mx.array | None = None,
     ) -> int:
         """Run the prefill forward + walk the prompt spans. Returns ``prefill_end``.
 
@@ -690,10 +777,14 @@ class DotsTtsModel:
             # The prompt_patches reshape is [1, S, patch_size, 128]; flatten the time
             # axis back to [1, S*patch_size, 128] for the encoder, which downsamples
             # by patch_size to [1, S, 1536].
-            flat = prompt_patches.reshape(
-                1, prompt_patch_count * self.patch_size, self.latent_dim
-            )
-            patch_emb = self.patch_encoder(flat).astype(inputs_embeds.dtype)  # [1, S, 1536]
+            # patch_emb is supplied by the profile path (precomputed at enroll); else
+            # recompute it here — numerically identical, so the ref-audio path is unchanged.
+            if patch_emb is None:
+                flat = prompt_patches.reshape(
+                    1, prompt_patch_count * self.patch_size, self.latent_dim
+                )
+                patch_emb = self.patch_encoder(flat)
+            patch_emb = patch_emb.astype(inputs_embeds.dtype)  # [1, S, 1536]
             # scatter into the prompt span slots.
             idx = mx.array(prompt_span_positions, dtype=mx.int32)
             inputs_embeds[:, idx, :] = patch_emb[:, :prompt_patch_count, :]
