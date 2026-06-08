@@ -740,6 +740,7 @@ class DotsTtsModel:
         max_generate_length: int = 500,
         eos_threshold: float = 0.8,
         trim_onset: bool = True,
+        streaming_decode: bool = True,
         gap_ms: int = 80,
         max_chars: int | None = None,
     ) -> dict:
@@ -752,7 +753,8 @@ class DotsTtsModel:
         Numerically just N independent ``generate()`` calls -- no model/parity change.
 
         Conditioning/sampling args mirror ``generate``; ``profile`` is mutually exclusive
-        with ``prompt_audio``/``prompt_text`` (enforced inside ``generate``). Returns
+        with ``prompt_audio``/``prompt_text`` (enforced inside ``generate``). ``streaming_decode``
+        (default on) is forwarded to each per-chunk ``generate`` call. Returns
         ``{"audio": [1, T], "sample_rate", "num_chunks", "num_patches"}``. (Speed is a CLI
         post-process, matching ``generate``.)
         """
@@ -779,6 +781,7 @@ class DotsTtsModel:
                 max_generate_length=max_generate_length,
                 eos_threshold=eos_threshold,
                 trim_onset=trim_onset,
+                streaming_decode=streaming_decode,
             )
             pieces.append(np.asarray(out["audio"][0].astype(mx.float32)))
             total_patches += int(out["num_patches"])
