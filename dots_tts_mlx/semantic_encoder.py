@@ -81,6 +81,15 @@ class TransformerEncoderLayer:
         h = self.ffn(h, hp=hp)
         return x + h
 
+    def decode_step(self, x_new: mx.array, kv_cache, mask: mx.array, *, hp: bool = False):
+        """Streaming block: attn.step (KV-cached) + FFN, same residual structure as __call__."""
+        h = self.attn_norm(x_new)
+        h = self.attn.step(h, kv_cache, mask, hp=hp)
+        x_new = x_new + h
+        h = self.ffn_norm(x_new)
+        h = self.ffn(h, hp=hp)
+        return x_new + h
+
 
 class SuperviseEncoder:
     """Stack of ``TransformerEncoderLayer`` run under a shared causal mask.
@@ -105,6 +114,26 @@ class SuperviseEncoder:
         for layer in self.layers:
             x = layer(x, mask, hp=hp)
         return x
+
+    def decode_step(self, x_new: mx.array, layer_caches: list, *, hp: bool = False) -> mx.array:
+        """Thread a new token block through every layer with a shared block mask.
+
+        ``x_new`` is [1, n, hidden]; ``layer_caches`` is one KVCache per layer (all at the
+        same offset). The mask [n, t_past + n] is True over the t_past past columns (attend
+        to all history) and lower-triangular over the n new columns (causal within the
+        block). Works for prefill (t_past=0, n=T -> full causal) and decode (t_past=T, n=2).
+        """
+        if not self.causal:
+            raise ValueError("streaming decode_step requires a causal encoder.")
+        n = x_new.shape[1]
+        t_past = layer_caches[0].offset
+        mask = mx.concatenate(
+            [mx.ones((n, t_past), dtype=mx.bool_), mx.tril(mx.ones((n, n), dtype=mx.bool_))],
+            axis=1,
+        )
+        for layer, cache in zip(self.layers, layer_caches):
+            x_new = layer.decode_step(x_new, cache, mask, hp=hp)
+        return x_new
 
 
 class VAESemanticEncoder:

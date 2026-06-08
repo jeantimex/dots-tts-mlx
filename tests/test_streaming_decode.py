@@ -116,3 +116,21 @@ def test_mha_step_matches_full_causal():
 
     maxabs = float(mx.abs(streamed - ref).max())
     assert maxabs <= 1e-4, f"streaming attention diverged: max|Δ|={maxabs:.2e}"
+
+
+def test_supervise_encoder_decode_step_matches_call():
+    enc = _tiny_encoder(in_dim=4, hidden=8, heads=2, layers=3, seed=11)
+    sup = enc.encoder
+    hidden, T = 8, 6
+    x = _rand((1, T, hidden), seed=21, scale=1.0)
+
+    ref = sup(x, hp=True)  # full causal forward
+
+    caches = [KVCache() for _ in sup.layers]
+    outs = []
+    for k in range(0, T, 2):
+        outs.append(sup.decode_step(x[:, k:k + 2, :], caches, hp=True))
+    streamed = mx.concatenate(outs, axis=1)
+
+    maxabs = float(mx.abs(streamed - ref).max())
+    assert maxabs <= 1e-4, f"encoder decode_step diverged: max|Δ|={maxabs:.2e}"
