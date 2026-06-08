@@ -131,3 +131,18 @@ def test_profile_mutual_exclusion():
         m.generate("x", profile=prof, prompt_audio=str(REF))
     with pytest.raises(ValueError, match="mutually exclusive"):
         m.generate("x", profile=prof, prompt_text="y")
+
+
+@pytest.mark.skipif(not REF.exists(), reason="reference wav absent (set $DOTS_TTS_REF)")
+def test_generate_trims_onset_by_default():
+    """generate() applies the onset trim by default; trim_onset=False keeps raw; default==True."""
+    m = _model()
+    kw = dict(prompt_audio=str(REF), prompt_text=REF_TEXT, num_steps=6, language="EN", seed=42)
+    raw = m.generate("Testing the onset trim path now.", trim_onset=False, **kw)
+    trimmed = m.generate("Testing the onset trim path now.", trim_onset=True, **kw)
+    default = m.generate("Testing the onset trim path now.", **kw)  # no trim_onset arg -> default
+    n_raw = int(raw["audio"].shape[-1])
+    n_trim = int(trimmed["audio"].shape[-1])
+    n_def = int(default["audio"].shape[-1])
+    assert n_trim <= n_raw, (n_trim, n_raw)   # trimming never lengthens
+    assert n_def == n_trim                     # default behaviour is trim_onset=True
