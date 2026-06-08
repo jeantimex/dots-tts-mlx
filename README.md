@@ -155,6 +155,30 @@ Key flags:
 - `--trim-onset` / `--no-trim-onset` — `--trim-onset` is **on by default**: it removes the fixed ~50–150 ms BigVGAN vocoder onset transient (a soft "hhh"/breath at sample 0) via an energy gate + 10 ms anti-click fade. `--no-trim-onset` keeps the raw vocoder output verbatim.
 - `--no-streaming-decode` — the patch encoder re-encodes each generated patch incrementally (maintained conv tail + per-layer KV caches), which is **O(n)** instead of the legacy recompute-full's O(n²)-total. Streaming is **on by default** and numerically identical to recompute-full (the encoder is fully causal, no rotary/qk-norm); `--no-streaming-decode` selects the recompute-full fallback for A/B / debugging.
 
+## Long / multilingual text (`--long`)
+
+For long passages, generate sentence-by-sentence with `--long`:
+
+```bash
+dots-tts --text "First sentence. Second sentence. ..." \
+    --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN --long
+
+# non-Latin works too (splits on 。 ！ ？ for CJK, । for Devanagari):
+dots-tts --text "नमस्ते दोस्तों। यह एक लंबा वाक्य है। धन्यवाद।" \
+    --ref-audio ref.wav --language HI --long
+```
+
+`--long` splits the text into sentences (a word-safe length cap sub-splits any over-long
+sentence, never mid-word or mid-character), generates each chunk independently, and
+concatenates them with short gaps (`--gap-ms`, default 80; `--max-chars` overrides the
+per-chunk cap). This **fixes long-text truncation and drift** — the single-pass model can
+stop early or wander on long input, especially in non-English languages — and keeps
+generation **linear** in length (modestly faster on long clips; it is not a per-clip
+speedup). `--speed` and `--profile` work with `--long`.
+
+> **Coming soon — faster generation (~2.3×):** a MeanFlow few-step decoder will cut
+> per-clip time substantially. `--long` is the correctness/robustness fix that lands first.
+
 ## Python API
 
 ```python
