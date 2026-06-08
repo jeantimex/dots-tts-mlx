@@ -22,8 +22,30 @@ Verified against the checkpoint key manifest (zero ``patch_encoder.*.q_norm`` /
 from __future__ import annotations
 
 import mlx.core as mx
+from dataclasses import dataclass, field
+
+from mlx_lm.models.cache import KVCache
 
 from .layers import Conv1d, Linear, Mlp, MultiHeadAttention, RMSNorm
+
+
+@dataclass
+class PatchEncoderDecodeState:
+    """Incremental decode state for the streaming patch encoder.
+
+    Mirrors upstream ``SemanticEncoderDecodeState`` minus ``positions``/``seq_len``:
+    our encoder has no rotary / no qk-norm, so position enters only via the causal
+    mask and each ``KVCache`` tracks its own offset.
+
+      * ``conv_tail`` — the ``ds_proj`` causal conv's left-context: the last
+        ``left_padding`` raw frames (NLC ``[1, left_padding, in_dim]``). Zeros at init,
+        which equals the full conv's zero left-pad on the first patch.
+      * ``layer_caches`` — one ``mlx_lm`` ``KVCache`` per encoder layer (the same cache
+        class the LLM trunk uses).
+    """
+
+    conv_tail: mx.array
+    layer_caches: list = field(default_factory=list)
 
 
 class TransformerEncoderLayer:
@@ -113,6 +135,13 @@ class VAESemanticEncoder:
         self.out_proj = out_proj
         self.out_ds_rate = out_ds_rate
         self.patch_size = patch_size
+
+    def init_decode_state(self, *, dtype: mx.Dtype = mx.float32) -> PatchEncoderDecodeState:
+        """Fresh streaming-decode state: zero conv_tail + one empty KVCache per layer."""
+        in_dim = self.ds_proj.weight.shape[-1]
+        conv_tail = mx.zeros((1, self.ds_proj.left_padding, in_dim), dtype=dtype)
+        layer_caches = [KVCache() for _ in self.encoder.layers]
+        return PatchEncoderDecodeState(conv_tail=conv_tail, layer_caches=layer_caches)
 
     def _downsample(self, x: mx.array) -> mx.array:
         # Upstream applies ds_proj on [B, C, T] (transpose) then transposes back.
