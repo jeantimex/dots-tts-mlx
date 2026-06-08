@@ -1,5 +1,6 @@
 import mlx.core as mx
 import numpy as np
+from mlx_lm.models.cache import KVCache
 
 from dots_tts_mlx.layers import Conv1d, Linear, Mlp, MultiHeadAttention, RMSNorm, silu
 from dots_tts_mlx.semantic_encoder import (
@@ -80,3 +81,38 @@ def test_downsample_step_equals_full_conv():
     # tail after the last patch == that patch's last left_padding frames.
     last = x[:, -enc.ds_proj.left_padding:, :]
     assert float(mx.abs(tail - last).max()) == 0.0
+
+
+def test_mha_step_matches_full_causal():
+    # One attention layer; compare streamed (2 tokens at a time) vs full causal __call__.
+    hidden, heads, T = 8, 2, 6
+    attn = MultiHeadAttention(hidden, heads, qkv_bias=False, qk_norm=False, rotary_bias=False)
+    attn.load_weights({
+        "w_q_proj_weight": _rand((hidden, hidden), 1),
+        "w_k_proj_weight": _rand((hidden, hidden), 2),
+        "w_v_proj_weight": _rand((hidden, hidden), 3),
+        "w_o_proj_weight": _rand((hidden, hidden), 4),
+        "w_o_proj_bias": _rand((hidden,), 5),
+    })
+    x = _rand((1, T, hidden), seed=42, scale=1.0)
+
+    # Full causal reference (hp=True -> fp32, so any diff is logic not tf32 noise).
+    full_mask = mx.tril(mx.ones((T, T), dtype=mx.bool_))[None]  # [1, T, T]
+    ref = attn(x, mask=full_mask, hp=True)
+
+    # Streamed: 2 tokens per step into a KVCache, block mask [n, t_past+n].
+    cache = KVCache()
+    outs = []
+    for k in range(0, T, 2):
+        blk = x[:, k:k + 2, :]
+        n = blk.shape[1]
+        t_past = cache.offset
+        mask = mx.concatenate(
+            [mx.ones((n, t_past), dtype=mx.bool_), mx.tril(mx.ones((n, n), dtype=mx.bool_))],
+            axis=1,
+        )
+        outs.append(attn.step(blk, cache, mask, hp=True))
+    streamed = mx.concatenate(outs, axis=1)
+
+    maxabs = float(mx.abs(streamed - ref).max())
+    assert maxabs <= 1e-4, f"streaming attention diverged: max|Δ|={maxabs:.2e}"
