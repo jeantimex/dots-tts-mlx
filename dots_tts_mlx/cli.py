@@ -91,7 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="(use mode) a .dtprofile to clone from — replaces --ref-audio/--ref-text.",
     )
+    ap.add_argument(
+        "--no-streaming-decode",
+        action="store_true",
+        help="Use the legacy recompute-full patch re-encode (O(n^3)); default is the "
+        "O(n) streaming decode. Numerically identical; for A/B / debugging only.",
+    )
     return ap
+
+
+_build_parser = build_parser
 
 
 def main() -> int:
@@ -130,6 +139,7 @@ def main() -> int:
             seed=args.seed,
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
+            streaming_decode=not args.no_streaming_decode,
         )
     else:
         if not args.ref_audio:
@@ -145,6 +155,7 @@ def main() -> int:
             seed=args.seed,
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
+            streaming_decode=not args.no_streaming_decode,
         )
 
     # Onset-transient trimming now happens INSIDE generate() (default-on, gated by
