@@ -134,3 +134,39 @@ def test_supervise_encoder_decode_step_matches_call():
 
     maxabs = float(mx.abs(streamed - ref).max())
     assert maxabs <= 1e-4, f"encoder decode_step diverged: max|Δ|={maxabs:.2e}"
+
+
+def test_prefill_decode_patch_equals_recompute_full():
+    enc = _tiny_encoder(in_dim=4, hidden=8, heads=2, layers=3, patch_size=4, seed=33)
+    p = enc.patch_size
+    n_prompt, n_gen = 3, 5
+    # Full denormalized history: prompt patches followed by generated patches.
+    hist = _rand((1, (n_prompt + n_gen) * p, 4), seed=55, scale=1.0)
+    prompt = hist[:, : n_prompt * p, :]
+
+    # Recompute-full oracle: encoder over the WHOLE history, last token per patch.
+    full = enc(hist, hp=True)  # [1, n_prompt+n_gen, out_dim]
+
+    # Streaming: prefill the prompt, then decode each generated patch.
+    state = enc.init_decode_state(dtype=mx.float32)
+    enc.prefill(prompt, state, hp=True)
+    for k in range(n_gen):
+        start = (n_prompt + k) * p
+        patch = hist[:, start:start + p, :]
+        tok = enc.decode_patch(patch, state, hp=True)  # [1, 1, out_dim]
+        ref_tok = full[:, n_prompt + k:n_prompt + k + 1, :]
+        maxabs = float(mx.abs(tok - ref_tok).max())
+        assert maxabs <= 2e-4, f"patch {k} diverged: max|Δ|={maxabs:.2e}"
+
+
+def test_decode_patch_no_prompt():
+    # No-prompt path: empty cache + zero conv_tail; first patch must match __call__.
+    enc = _tiny_encoder(in_dim=4, hidden=8, layers=2, patch_size=4, seed=66)
+    p = enc.patch_size
+    hist = _rand((1, 2 * p, 4), seed=77, scale=1.0)
+    full = enc(hist, hp=True)
+    state = enc.init_decode_state(dtype=mx.float32)
+    for k in range(2):
+        tok = enc.decode_patch(hist[:, k * p:(k + 1) * p, :], state, hp=True)
+        maxabs = float(mx.abs(tok - full[:, k:k + 1, :]).max())
+        assert maxabs <= 2e-4, f"no-prompt patch {k} diverged: max|Δ|={maxabs:.2e}"

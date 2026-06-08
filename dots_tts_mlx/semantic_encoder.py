@@ -211,6 +211,46 @@ class VAESemanticEncoder:
             z = z.reshape(b, s, d, h).reshape(b, s, d * h)
         return self.out_proj(z, hp=hp)
 
+    def prefill(self, x: mx.array, state: PatchEncoderDecodeState, *, hp: bool = False) -> None:
+        """Populate the decode state from the prompt's denormalized latents.
+
+        Runs the full causal downsample + in_proj over the prompt, threads all resulting
+        tokens through the encoder into the per-layer KV caches (offset 0 -> S*out_ds_rate),
+        and sets conv_tail = the prompt's last left_padding raw frames. ``x`` is
+        [1, S*patch_size, in_dim] (the same denormalized stream that seeds the recompute-full
+        history). Mutates ``state``; no return value (the prompt embeddings are computed for
+        the LLM scatter separately in model._prefill).
+        """
+        t = x.shape[1]
+        if t == 0:
+            return
+        if t % self.patch_size != 0:
+            raise ValueError(
+                f"prefill expects T divisible by patch_size={self.patch_size}, got T={t}."
+            )
+        down = self._downsample(x)                  # [1, S*out_ds_rate, in_dim]
+        step_inputs = self.in_proj(down, hp=hp)     # [1, S*out_ds_rate, hidden]
+        self.encoder.decode_step(step_inputs, state.layer_caches, hp=hp)
+        state.conv_tail = x[:, -self.ds_proj.left_padding:, :]
+
+    def decode_patch(
+        self, patch: mx.array, state: PatchEncoderDecodeState, *, hp: bool = False
+    ) -> mx.array:
+        """Incrementally encode ONE generated patch -> one LLM token [1, 1, out_dim].
+
+        Streaming equivalent of recompute-full: conv step (with carried tail) + in_proj +
+        per-layer KV-cached decode_step + out_ds_rate grouping + out_proj. Mutates
+        ``state.conv_tail`` and the layer caches.
+        """
+        if patch.shape[1] != self.patch_size:
+            raise ValueError(
+                f"decode_patch expects patch length {self.patch_size}, got {patch.shape[1]}."
+            )
+        down, state.conv_tail = self._downsample_step(patch, state.conv_tail)
+        step_inputs = self.in_proj(down, hp=hp)     # [1, out_ds_rate, hidden]
+        enc = self.encoder.decode_step(step_inputs, state.layer_caches, hp=hp)
+        return self._project_embeddings(enc, hp=hp)  # [1, 1, out_dim]
+
     def __call__(self, x: mx.array, *, hp: bool = False) -> mx.array:
         # The recompute-full / patch decode loops always feed a time dimension that is
         # a multiple of patch_size (one or more whole VAE latent patches); make that
