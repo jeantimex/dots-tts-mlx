@@ -220,6 +220,26 @@ class QuantizationConfig:
 
 
 @dataclass
+class MeanFlowConfig:
+    """MeanFlow distilled-sampler config (the ``mf`` checkpoint).
+
+    Absent from config.json ⇒ flow-matching mode (``ModelConfig.meanflow is None``).
+    Present with ``enabled=True`` ⇒ the DiT carries a ``duration_embedder`` and the
+    decode loop uses the few-step ``meanflow_sample`` solver (NFE, no CFG).
+    """
+
+    enabled: bool = False
+    use_duration_embedding: bool = True
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MeanFlowConfig":
+        return cls(
+            enabled=bool(d.get("enabled", False)),
+            use_duration_embedding=bool(d.get("use_duration_embedding", True)),
+        )
+
+
+@dataclass
 class ModelConfig:
     """Top-level dots.tts config holding all submodule configs + shared constants."""
 
@@ -237,6 +257,7 @@ class ModelConfig:
     vocoder: VocoderConfig = field(default_factory=VocoderConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     quantization: "QuantizationConfig | None" = None
+    meanflow: "MeanFlowConfig | None" = None
 
     @classmethod
     def from_checkpoint(cls, path: str | Path) -> "ModelConfig":
@@ -249,6 +270,7 @@ class ModelConfig:
 
         voc = cfg.get("vocoder", {})
         q = cfg.get("quantization")
+        mf = cfg.get("meanflow")
         return cls(
             latent_dim=int(cfg.get("latent_dim", 128)),
             patch_size=int(cfg.get("patch_size", 4)),
@@ -263,4 +285,10 @@ class ModelConfig:
             vocoder=VocoderConfig.from_dict(voc),
             llm=LLMConfig.from_dict(llm_cfg),
             quantization=QuantizationConfig.from_dict(q) if q else None,
+            meanflow=MeanFlowConfig.from_dict(mf) if mf else None,
         )
+
+    @property
+    def mode(self) -> str:
+        """``"meanflow"`` iff a meanflow block is present and enabled, else ``"flow_matching"``."""
+        return "meanflow" if (self.meanflow is not None and self.meanflow.enabled) else "flow_matching"
