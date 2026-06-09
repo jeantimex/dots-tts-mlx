@@ -70,6 +70,17 @@ from .text import DotsTokenizer  # noqa: E402
 _SPEAKER_FBANK_SAMPLE_RATE = 16000
 
 
+def _resolve_num_steps(num_steps: int | None, mode: str) -> int:
+    """Per-mode default for the solver step count.
+
+    ``None`` resolves to 4 in meanflow mode (the published distilled NFE) and 10 in
+    flow-matching mode (the existing default). An explicit value is always honored.
+    """
+    if num_steps is not None:
+        return int(num_steps)
+    return 4 if mode == "meanflow" else 10
+
+
 # ---------------------------------------------------------------------------
 # Audio I/O + resampling (pure numpy; no torch / torchaudio / librosa).
 # ---------------------------------------------------------------------------
@@ -278,6 +289,7 @@ class DotsTtsModel:
         hop_size: int = 1920,
         latent_dim: int = 128,
         dtype: mx.Dtype = mx.float32,
+        mode: str = "flow_matching",
     ):
         self.tokenizer = tokenizer
         self.llm = llm
@@ -295,6 +307,7 @@ class DotsTtsModel:
         self.fm_hidden = 1024
         self.latent_dim = latent_dim
         self.dtype = dtype
+        self.mode = mode
         self.sample_rate = 48000
         self._model_dir: Path | None = None
         self._compat_hash: str | None = None
@@ -367,6 +380,7 @@ class DotsTtsModel:
             hop_size=hop_size,
             latent_dim=config.latent_dim,
             dtype=dtype,
+            mode=config.mode,
         )
         from .profile import model_compat_hash
 
@@ -486,7 +500,7 @@ class DotsTtsModel:
         prompt_audio: str | Path | None = None,
         prompt_text: str | None = None,
         profile: "SpeakerProfile | None" = None,  # noqa: F821
-        num_steps: int = 10,
+        num_steps: int | None = None,
         guidance_scale: float = 1.2,
         speaker_scale: float = 1.5,
         language: str | None = None,
@@ -516,6 +530,7 @@ class DotsTtsModel:
         """
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
+        num_steps = _resolve_num_steps(num_steps, self.mode)
 
         # --- prompt conditioning: from a saved profile, or computed from prompt_audio. ---
         patch_emb_override = None
@@ -659,17 +674,28 @@ class DotsTtsModel:
                 noise = mx.random.normal(
                     (1, self.patch_size, self.latent_dim)
                 ).astype(self.dtype)
-                patch = self.flow_solver.denoise(
-                    input_sequence=input_seq,
-                    cfg_sequence=cfg_seq,
-                    attn_mask=attn_mask,
-                    pos_ids=pos_ids,
-                    g_cond=g_cond_run if g_cond_run is not None else null_g_cond,
-                    guidance_scale=guidance_scale,
-                    num_steps=num_steps,
-                    patch_size=self.patch_size,
-                    noise=noise,
-                )  # normalized latent [1, patch_size, 128]
+                if self.mode == "meanflow":
+                    patch = self.flow_solver.meanflow_sample(
+                        input_sequence=input_seq,
+                        attn_mask=attn_mask,
+                        pos_ids=pos_ids,
+                        g_cond=g_cond_run if g_cond_run is not None else null_g_cond,
+                        num_steps=num_steps,
+                        patch_size=self.patch_size,
+                        noise=noise,
+                    )  # normalized latent [1, patch_size, 128]
+                else:
+                    patch = self.flow_solver.denoise(
+                        input_sequence=input_seq,
+                        cfg_sequence=cfg_seq,
+                        attn_mask=attn_mask,
+                        pos_ids=pos_ids,
+                        g_cond=g_cond_run if g_cond_run is not None else null_g_cond,
+                        guidance_scale=guidance_scale,
+                        num_steps=num_steps,
+                        patch_size=self.patch_size,
+                        noise=noise,
+                    )  # normalized latent [1, patch_size, 128]
                 mx.eval(patch)
 
                 # consume the patch: append history + re-encode for the LLM.
@@ -734,7 +760,7 @@ class DotsTtsModel:
         prompt_audio: str | Path | None = None,
         prompt_text: str | None = None,
         profile: "SpeakerProfile | None" = None,  # noqa: F821
-        num_steps: int = 10,
+        num_steps: int | None = None,
         guidance_scale: float = 1.2,
         speaker_scale: float = 1.5,
         language: str | None = None,
@@ -762,6 +788,9 @@ class DotsTtsModel:
         (default on) is forwarded to each per-chunk ``generate`` call. Returns
         ``{"audio": [1, T], "sample_rate", "num_chunks", "num_patches"}``. (Speed is a CLI
         post-process, matching ``generate``.)
+
+        ``num_steps=None`` (default) resolves per-mode in ``generate`` (4 meanflow / 10
+        flow-matching).
         """
         from .chunking import (
             assemble_chunks,

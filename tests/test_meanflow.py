@@ -8,6 +8,7 @@ import mlx.core as mx
 from dots_tts_mlx.config import MeanFlowConfig, ModelConfig
 from dots_tts_mlx.dit import DiT, FinalLayer, FlowSolver, TimestepEmbedder
 from dots_tts_mlx.layers import Linear
+from dots_tts_mlx.model import _resolve_num_steps
 
 
 def _write_min_checkpoint(tmp_path, *, meanflow: dict | None):
@@ -151,3 +152,14 @@ def test_meanflow_sample_respects_num_steps():
     )
     assert len(fake.calls) == 2
     assert [round(c["t"], 6) for c in fake.calls] == [0.0, 0.5]
+
+
+def test_resolve_num_steps_defaults_per_mode():
+    assert _resolve_num_steps(None, "flow_matching") == 10
+    assert _resolve_num_steps(None, "meanflow") == 4
+
+
+def test_resolve_num_steps_explicit_override_honored():
+    assert _resolve_num_steps(2, "meanflow") == 2
+    assert _resolve_num_steps(8, "flow_matching") == 8
+    assert _resolve_num_steps(10, "meanflow") == 10  # explicit 10 honored, not coerced
