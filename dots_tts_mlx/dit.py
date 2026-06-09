@@ -350,3 +350,52 @@ class FlowSolver:
             )
             z = z + dt * v
         return z
+
+    def meanflow_sample(
+        self,
+        *,
+        input_sequence: mx.array,
+        attn_mask: mx.array | None,
+        pos_ids: mx.array | None,
+        g_cond: mx.array,
+        num_steps: int = 4,
+        patch_size: int = 4,
+        noise: mx.array,
+    ) -> mx.array:
+        """Distilled MeanFlow few-step sampler (NFE = ``num_steps``, NO CFG).
+
+        Mirrors upstream ``_meanflow_step_fm`` / ``meanflow_solver_step``: the DiT
+        predicts the AVERAGE velocity over the interval ``[t, t+dt]`` (it receives both
+        ``t`` and ``dt`` as ``duration``), so a single forward per step advances the full
+        ``dt``. No classifier-free guidance — one conditional branch with the real
+        ``g_cond`` (guidance is fused into the distilled student). Uniform schedule on
+        ``[0, 1]``: ``t_k = k/nfe``, ``dt = 1/nfe``.
+
+        Args:
+            input_sequence: the conditional sequence ``[1, L, hidden]``; its last
+                ``patch_size`` slots are overwritten by the projected ``z`` each step.
+            attn_mask / pos_ids: the ``[1, L, L]`` mask / ``[1, L]`` positions.
+            g_cond: global conditioning ``[1, hidden]`` (already scaled upstream).
+            num_steps: NFE (number of DiT forwards). Distilled to work at 2-4.
+            patch_size: number of latent slots to denoise.
+            noise: the injected initial coordinate ``[1, patch_size, latent_dim]``.
+
+        Returns:
+            the denoised latent patch ``[1, patch_size, latent_dim]`` (at t=1).
+        """
+        rdtype = input_sequence.dtype
+        z = noise.astype(rdtype)
+        latent_start = input_sequence.shape[1] - patch_size
+        g = g_cond.astype(rdtype)
+        inv = 1.0 / num_steps
+        for k in range(num_steps):
+            t = mx.array([k * inv], dtype=rdtype)
+            dt = mx.array([inv], dtype=rdtype)
+            z_proj = self.coordinate_proj(z).astype(rdtype)
+            seq = mx.concatenate([input_sequence[:, :latent_start], z_proj], axis=1)
+            v = self.dit(
+                seq, t, attn_mask=attn_mask, pos_ids=pos_ids, g_cond=g, duration=dt
+            )
+            v = v[:, latent_start:]  # [1, patch_size, latent_dim]
+            z = z + v * inv
+        return z

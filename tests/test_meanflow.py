@@ -6,7 +6,7 @@ import json
 import mlx.core as mx
 
 from dots_tts_mlx.config import MeanFlowConfig, ModelConfig
-from dots_tts_mlx.dit import DiT, FinalLayer, TimestepEmbedder
+from dots_tts_mlx.dit import DiT, FinalLayer, FlowSolver, TimestepEmbedder
 from dots_tts_mlx.layers import Linear
 
 
@@ -89,3 +89,65 @@ def test_dit_without_duration_embedder_ignores_duration():
     out_a = dit(x, t)
     out_b = dit(x, t, duration=mx.array([0.25], dtype=mx.float32))
     assert float(mx.max(mx.abs(out_a - out_b))) == 0.0
+
+
+class _RecordingDiT:
+    """Fake DiT: records each call's (t, dt, batch) and returns a fixed tail velocity."""
+
+    def __init__(self, patch_size, latent_dim):
+        self.calls = []
+        self.patch_size = patch_size
+        self.latent_dim = latent_dim
+
+    def __call__(self, x, timesteps, *, attn_mask=None, pos_ids=None, g_cond=None, duration=None):
+        self.calls.append(
+            {
+                "t": float(timesteps.reshape(-1)[0]),
+                "dt": None if duration is None else float(duration.reshape(-1)[0]),
+                "batch": int(x.shape[0]),
+            }
+        )
+        L = x.shape[1]
+        head = mx.zeros((1, L - self.patch_size, self.latent_dim), dtype=mx.float32)
+        tail = mx.full((1, self.patch_size, self.latent_dim), 0.1, dtype=mx.float32)
+        return mx.concatenate([head, tail], axis=1)  # [1, L, latent_dim]
+
+
+def _zero_proj(latent_dim, hidden):
+    """coordinate_proj: latent_dim -> hidden (zero weights; the fake DiT ignores content)."""
+    return Linear(mx.zeros((hidden, latent_dim), dtype=mx.float32), mx.zeros((hidden,), dtype=mx.float32))
+
+
+def test_meanflow_sample_nfe_schedule_and_accumulation():
+    patch_size, latent_dim, hidden, L = 4, 6, 8, 12
+    fake = _RecordingDiT(patch_size, latent_dim)
+    solver = FlowSolver(fake, _zero_proj(latent_dim, hidden), latent_dim=latent_dim)
+    noise = mx.zeros((1, patch_size, latent_dim), dtype=mx.float32)
+    input_sequence = mx.ones((1, L, hidden), dtype=mx.float32)
+    nfe = 4
+    z = solver.meanflow_sample(
+        input_sequence=input_sequence, attn_mask=None, pos_ids=None,
+        g_cond=mx.zeros((1, hidden), dtype=mx.float32),
+        num_steps=nfe, patch_size=patch_size, noise=noise,
+    )
+    # NFE forwards, each a SINGLE branch (batch==1, no cond/uncond doubling)
+    assert len(fake.calls) == nfe
+    assert all(c["batch"] == 1 for c in fake.calls)
+    # uniform schedule t=k/nfe, dt=1/nfe
+    assert [round(c["t"], 6) for c in fake.calls] == [0.0, 0.25, 0.5, 0.75]
+    assert all(round(c["dt"], 6) == 0.25 for c in fake.calls)
+    # z accumulates v*dt each step: 0.1 * 0.25 * 4 = 0.1
+    assert abs(float(z[0, 0, 0]) - 0.1) < 1e-5
+
+
+def test_meanflow_sample_respects_num_steps():
+    patch_size, latent_dim, hidden, L = 4, 6, 8, 12
+    fake = _RecordingDiT(patch_size, latent_dim)
+    solver = FlowSolver(fake, _zero_proj(latent_dim, hidden), latent_dim=latent_dim)
+    solver.meanflow_sample(
+        input_sequence=mx.ones((1, L, hidden), dtype=mx.float32),
+        attn_mask=None, pos_ids=None, g_cond=mx.zeros((1, hidden), dtype=mx.float32),
+        num_steps=2, patch_size=patch_size, noise=mx.zeros((1, patch_size, latent_dim), dtype=mx.float32),
+    )
+    assert len(fake.calls) == 2
+    assert [round(c["t"], 6) for c in fake.calls] == [0.0, 0.5]
