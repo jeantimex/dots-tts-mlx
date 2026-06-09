@@ -101,3 +101,13 @@ def test_cli_has_no_streaming_decode_flag():
     assert ns.no_streaming_decode is False  # default: streaming ON
     ns2 = p.parse_args(["--text", "hi", "--no-streaming-decode"])
     assert ns2.no_streaming_decode is True
+
+
+def test_cli_long_flags_parse():
+    from dots_tts_mlx.cli import build_parser
+
+    p = build_parser()
+    ns = p.parse_args(["--text", "hi"])
+    assert ns.long is False and ns.gap_ms == 80 and ns.max_chars is None
+    ns2 = p.parse_args(["--text", "hi", "--long", "--gap-ms", "120", "--max-chars", "100"])
+    assert ns2.long is True and ns2.gap_ms == 120 and ns2.max_chars == 100

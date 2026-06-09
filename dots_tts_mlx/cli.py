@@ -97,6 +97,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Use the legacy recompute-full patch re-encode (O(n^3)); default is the "
         "O(n) streaming decode. Numerically identical; for A/B / debugging only.",
     )
+    ap.add_argument(
+        "--long",
+        action="store_true",
+        help="Sentence-chunked long-text generation: split into sentences, generate each "
+        "separately, concatenate. Fixes long/multilingual EOS truncation + keeps gen linear.",
+    )
+    ap.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help="Override the per-chunk character cap (--long). Default is script-aware.",
+    )
+    ap.add_argument(
+        "--gap-ms",
+        type=int,
+        default=80,
+        help="Silence (ms) inserted between sentence chunks in --long mode.",
+    )
     return ap
 
 
@@ -130,7 +148,9 @@ def main() -> int:
         from dots_tts_mlx.profile import SpeakerProfile
 
         prof = SpeakerProfile.load(args.profile)
-        out = model.generate(
+        _gen = model.generate_long if args.long else model.generate
+        _kw = {"gap_ms": args.gap_ms, "max_chars": args.max_chars} if args.long else {}
+        out = _gen(
             text=args.text,
             profile=prof,
             num_steps=args.num_steps,
@@ -140,11 +160,14 @@ def main() -> int:
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
             streaming_decode=not args.no_streaming_decode,
+            **_kw,
         )
     else:
         if not args.ref_audio:
             ap.error("--ref-audio is required (or pass --profile)")
-        out = model.generate(
+        _gen = model.generate_long if args.long else model.generate
+        _kw = {"gap_ms": args.gap_ms, "max_chars": args.max_chars} if args.long else {}
+        out = _gen(
             text=args.text,
             prompt_audio=args.ref_audio,
             prompt_text=args.ref_text,
@@ -156,6 +179,7 @@ def main() -> int:
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
             streaming_decode=not args.no_streaming_decode,
+            **_kw,
         )
 
     # Onset-transient trimming now happens INSIDE generate() (default-on, gated by

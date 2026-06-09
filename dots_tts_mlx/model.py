@@ -41,6 +41,7 @@ pos_ids run 0..fm_len-1 for history then fm_len..fm_len+patch_size-1 for the blo
 from __future__ import annotations
 
 import bisect
+import gc
 import math
 import wave
 from pathlib import Path
@@ -722,6 +723,78 @@ class DotsTtsModel:
             "audio": wav,
             "sample_rate": self.sample_rate,
             "num_patches": len(emitted),
+        }
+
+    def generate_long(
+        self,
+        text: str,
+        *,
+        prompt_audio: str | Path | None = None,
+        prompt_text: str | None = None,
+        profile: "SpeakerProfile | None" = None,  # noqa: F821
+        num_steps: int = 10,
+        guidance_scale: float = 1.2,
+        speaker_scale: float = 1.5,
+        language: str | None = None,
+        seed: int = 42,
+        max_generate_length: int = 500,
+        eos_threshold: float = 0.8,
+        trim_onset: bool = True,
+        streaming_decode: bool = True,
+        gap_ms: int = 80,
+        max_chars: int | None = None,
+    ) -> dict:
+        """Render long/multilingual text by sentence-chunking.
+
+        Splits ``text`` into TTS-sized chunks (sentence-first, word-safe length-cap
+        fallback), generates each chunk INDEPENDENTLY via ``generate()`` (short context ->
+        EOS fires correctly per sentence -> no truncation/drift; no O(n^2) growth), drains
+        Metal between chunks, and concatenates with ``gap_ms`` silence between sentences.
+        Numerically just N independent ``generate()`` calls -- no model/parity change.
+
+        Conditioning/sampling args mirror ``generate``; ``profile`` is mutually exclusive
+        with ``prompt_audio``/``prompt_text`` (enforced inside ``generate``). ``streaming_decode``
+        (default on) is forwarded to each per-chunk ``generate`` call. Returns
+        ``{"audio": [1, T], "sample_rate", "num_chunks", "num_patches"}``. (Speed is a CLI
+        post-process, matching ``generate``.)
+        """
+        from .chunking import assemble_chunks, resolve_max_chars, split_for_generation
+
+        cap = int(max_chars) if max_chars else resolve_max_chars(text, language=language)
+        chunks = split_for_generation(text, max_chars=cap, language=language)
+        if not chunks:
+            raise ValueError("generate_long: text is empty after splitting.")
+
+        pieces: list[np.ndarray] = []
+        total_patches = 0
+        for chunk in chunks:
+            out = self.generate(
+                chunk,
+                prompt_audio=prompt_audio,
+                prompt_text=prompt_text,
+                profile=profile,
+                num_steps=num_steps,
+                guidance_scale=guidance_scale,
+                speaker_scale=speaker_scale,
+                language=language,
+                seed=seed,
+                max_generate_length=max_generate_length,
+                eos_threshold=eos_threshold,
+                trim_onset=trim_onset,
+                streaming_decode=streaming_decode,
+            )
+            pieces.append(np.asarray(out["audio"][0].astype(mx.float32)))
+            total_patches += int(out["num_patches"])
+            mx.synchronize()
+            mx.clear_cache()
+            gc.collect()
+
+        full = assemble_chunks(pieces, self.sample_rate, gap_ms)
+        return {
+            "audio": mx.array(full)[None],
+            "sample_rate": self.sample_rate,
+            "num_chunks": len(chunks),
+            "num_patches": total_patches,
         }
 
     # endregion generate
