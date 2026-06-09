@@ -22,8 +22,30 @@ Verified against the checkpoint key manifest (zero ``patch_encoder.*.q_norm`` /
 from __future__ import annotations
 
 import mlx.core as mx
+from dataclasses import dataclass, field
+
+from mlx_lm.models.cache import KVCache
 
 from .layers import Conv1d, Linear, Mlp, MultiHeadAttention, RMSNorm
+
+
+@dataclass
+class PatchEncoderDecodeState:
+    """Incremental decode state for the streaming patch encoder.
+
+    Mirrors upstream ``SemanticEncoderDecodeState`` minus ``positions``/``seq_len``:
+    our encoder has no rotary / no qk-norm, so position enters only via the causal
+    mask and each ``KVCache`` tracks its own offset.
+
+      * ``conv_tail`` — the ``ds_proj`` causal conv's left-context: the last
+        ``left_padding`` raw frames (NLC ``[1, left_padding, in_dim]``). Zeros at init,
+        which equals the full conv's zero left-pad on the first patch.
+      * ``layer_caches`` — one ``mlx_lm`` ``KVCache`` per encoder layer (the same cache
+        class the LLM trunk uses).
+    """
+
+    conv_tail: mx.array
+    layer_caches: list = field(default_factory=list)
 
 
 class TransformerEncoderLayer:
@@ -59,6 +81,15 @@ class TransformerEncoderLayer:
         h = self.ffn(h, hp=hp)
         return x + h
 
+    def decode_step(self, x_new: mx.array, kv_cache, mask: mx.array, *, hp: bool = False):
+        """Streaming block: attn.step (KV-cached) + FFN, same residual structure as __call__."""
+        h = self.attn_norm(x_new)
+        h = self.attn.step(h, kv_cache, mask, hp=hp)
+        x_new = x_new + h
+        h = self.ffn_norm(x_new)
+        h = self.ffn(h, hp=hp)
+        return x_new + h
+
 
 class SuperviseEncoder:
     """Stack of ``TransformerEncoderLayer`` run under a shared causal mask.
@@ -83,6 +114,26 @@ class SuperviseEncoder:
         for layer in self.layers:
             x = layer(x, mask, hp=hp)
         return x
+
+    def decode_step(self, x_new: mx.array, layer_caches: list, *, hp: bool = False) -> mx.array:
+        """Thread a new token block through every layer with a shared block mask.
+
+        ``x_new`` is [1, n, hidden]; ``layer_caches`` is one KVCache per layer (all at the
+        same offset). The mask [n, t_past + n] is True over the t_past past columns (attend
+        to all history) and lower-triangular over the n new columns (causal within the
+        block). Works for prefill (t_past=0, n=T -> full causal) and decode (t_past=T, n=2).
+        """
+        if not self.causal:
+            raise ValueError("streaming decode_step requires a causal encoder.")
+        n = x_new.shape[1]
+        t_past = layer_caches[0].offset
+        mask = mx.concatenate(
+            [mx.ones((n, t_past), dtype=mx.bool_), mx.tril(mx.ones((n, n), dtype=mx.bool_))],
+            axis=1,
+        )
+        for layer, cache in zip(self.layers, layer_caches):
+            x_new = layer.decode_step(x_new, cache, mask, hp=hp)
+        return x_new
 
 
 class VAESemanticEncoder:
@@ -114,11 +165,41 @@ class VAESemanticEncoder:
         self.out_ds_rate = out_ds_rate
         self.patch_size = patch_size
 
+    def init_decode_state(self, *, dtype: mx.Dtype = mx.float32) -> PatchEncoderDecodeState:
+        """Fresh streaming-decode state: zero conv_tail + one empty KVCache per layer."""
+        in_dim = self.ds_proj.weight.shape[-1]
+        conv_tail = mx.zeros((1, self.ds_proj.left_padding, in_dim), dtype=dtype)
+        layer_caches = [KVCache() for _ in self.encoder.layers]
+        return PatchEncoderDecodeState(conv_tail=conv_tail, layer_caches=layer_caches)
+
     def _downsample(self, x: mx.array) -> mx.array:
         # Upstream applies ds_proj on [B, C, T] (transpose) then transposes back.
         # Our Conv1d is channels-last (NLC), so x[B, T, C] feeds it directly.
         # (The conv's precision is fixed at construction via its own ``hp`` flag.)
         return self.ds_proj(x)
+
+    def _downsample_step(self, patch: mx.array, conv_tail: mx.array):
+        """Streaming causal stride-2 conv over one patch (NLC), conv-only (no in_proj).
+
+        Mirrors upstream ``_downsample_step``: prepend the carried left-context, run the
+        conv with padding=0 (the tail supplies the left context), and carry the new tail.
+        Returns ``(down [1, out_ds_rate, in_dim], new_conv_tail [1, left_padding, in_dim])``.
+        Numerically identical to ``_downsample`` over the concatenated stream because the
+        conv is causal and the tail reproduces its exact left-context.
+        """
+        conv_input = mx.concatenate([conv_tail, patch], axis=1)  # [1, lp+P, in_dim]
+        y = mx.conv1d(
+            conv_input,
+            self.ds_proj.weight,
+            stride=self.ds_proj.stride,
+            padding=0,
+            dilation=self.ds_proj.dilation,
+            groups=self.ds_proj.groups,
+        )
+        if self.ds_proj.bias is not None:
+            y = y + self.ds_proj.bias
+        new_conv_tail = patch[:, -self.ds_proj.left_padding:, :]
+        return y, new_conv_tail
 
     def _project_embeddings(self, z: mx.array, *, hp: bool) -> mx.array:
         if self.out_ds_rate > 1:
@@ -129,6 +210,46 @@ class VAESemanticEncoder:
             # then merge the d sub-steps into the feature axis (d varies fastest).
             z = z.reshape(b, s, d, h).reshape(b, s, d * h)
         return self.out_proj(z, hp=hp)
+
+    def prefill(self, x: mx.array, state: PatchEncoderDecodeState, *, hp: bool = False) -> None:
+        """Populate the decode state from the prompt's denormalized latents.
+
+        Runs the full causal downsample + in_proj over the prompt, threads all resulting
+        tokens through the encoder into the per-layer KV caches (offset 0 -> S*out_ds_rate),
+        and sets conv_tail = the prompt's last left_padding raw frames. ``x`` is
+        [1, S*patch_size, in_dim] (the same denormalized stream that seeds the recompute-full
+        history). Mutates ``state``; no return value (the prompt embeddings are computed for
+        the LLM scatter separately in model._prefill).
+        """
+        t = x.shape[1]
+        if t == 0:
+            return
+        if t % self.patch_size != 0:
+            raise ValueError(
+                f"prefill expects T divisible by patch_size={self.patch_size}, got T={t}."
+            )
+        down = self._downsample(x)                  # [1, S*out_ds_rate, in_dim]
+        step_inputs = self.in_proj(down, hp=hp)     # [1, S*out_ds_rate, hidden]
+        self.encoder.decode_step(step_inputs, state.layer_caches, hp=hp)
+        state.conv_tail = x[:, -self.ds_proj.left_padding:, :]
+
+    def decode_patch(
+        self, patch: mx.array, state: PatchEncoderDecodeState, *, hp: bool = False
+    ) -> mx.array:
+        """Incrementally encode ONE generated patch -> one LLM token [1, 1, out_dim].
+
+        Streaming equivalent of recompute-full: conv step (with carried tail) + in_proj +
+        per-layer KV-cached decode_step + out_ds_rate grouping + out_proj. Mutates
+        ``state.conv_tail`` and the layer caches.
+        """
+        if patch.shape[1] != self.patch_size:
+            raise ValueError(
+                f"decode_patch expects patch length {self.patch_size}, got {patch.shape[1]}."
+            )
+        down, state.conv_tail = self._downsample_step(patch, state.conv_tail)
+        step_inputs = self.in_proj(down, hp=hp)     # [1, out_ds_rate, hidden]
+        enc = self.encoder.decode_step(step_inputs, state.layer_caches, hp=hp)
+        return self._project_embeddings(enc, hp=hp)  # [1, 1, out_dim]
 
     def __call__(self, x: mx.array, *, hp: bool = False) -> mx.array:
         # The recompute-full / patch decode loops always feed a time dimension that is

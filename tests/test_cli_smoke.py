@@ -91,3 +91,13 @@ def test_enroll_flags_parse():
 
     ns2 = build_parser().parse_args(["--profile", "v.dtprofile", "--text", "hi"])
     assert ns2.profile == "v.dtprofile"
+
+
+def test_cli_has_no_streaming_decode_flag():
+    from dots_tts_mlx.cli import _build_parser
+
+    p = _build_parser()
+    ns = p.parse_args(["--text", "hi"])
+    assert ns.no_streaming_decode is False  # default: streaming ON
+    ns2 = p.parse_args(["--text", "hi", "--no-streaming-decode"])
+    assert ns2.no_streaming_decode is True

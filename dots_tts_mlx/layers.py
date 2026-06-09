@@ -546,3 +546,35 @@ class MultiHeadAttention:
 
         out = self._merge_heads(out)
         return self.o_proj(out, hp=hp)
+
+    def step(self, x_new, kv_cache, mask, *, hp: bool = False):
+        """Streaming self-attention: new tokens attend to a growing KV cache.
+
+        Projects ``x_new`` [1, n, hidden], appends its K/V to ``kv_cache``
+        (mlx_lm KVCache; returns the full [1, H, T, D] tensors), and runs SDPA under the
+        bool ``mask`` [n, T] (True=attend). No rotary / qk-norm (the patch encoder uses
+        neither) — position enters only through ``mask``, so no positions are tracked.
+        """
+        assert self.rotary is None, "streaming step() does not support rotary"
+        qh = self._split_heads(self.q_proj(x_new, hp=hp))  # [1, H, n, D]
+        kh = self._split_heads(self.k_proj(x_new, hp=hp))
+        vh = self._split_heads(self.v_proj(x_new, hp=hp))
+        qh = self.q_norm(qh)  # _Identity for the encoder
+        kh = self.k_norm(kh)
+        k_full, v_full = kv_cache.update_and_fetch(kh, vh)  # [1, H, T, D]
+
+        attn_bias = None
+        if mask is not None:
+            m = mask[None, None, :, :]  # [1, 1, n, T]
+            attn_bias = mx.where(
+                m, mx.array(0.0, dtype=mx.float32), mx.array(-mx.inf, dtype=mx.float32)
+            )
+        if hp:
+            out = _sdpa_manual_fp32(qh, k_full, v_full, attn_bias, self.scale)
+        else:
+            if attn_bias is not None and attn_bias.dtype != qh.dtype:
+                attn_bias = attn_bias.astype(qh.dtype)
+            out = mx.fast.scaled_dot_product_attention(
+                qh, k_full, v_full, scale=self.scale, mask=attn_bias
+            )
+        return self.o_proj(self._merge_heads(out), hp=hp)

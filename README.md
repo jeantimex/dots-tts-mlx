@@ -153,6 +153,7 @@ Key flags:
 - `--num-steps 10` `--guidance-scale 1.2` `--speaker-scale 1.5` `--seed 42` — flow-matching sampler knobs (defaults are the validated ship config).
 - `--speed 1.0` — adjust playback tempo, **pitch-preserving** (ffmpeg `atempo`; `<1` slower, `>1` faster), applied after onset-trim.
 - `--trim-onset` / `--no-trim-onset` — `--trim-onset` is **on by default**: it removes the fixed ~50–150 ms BigVGAN vocoder onset transient (a soft "hhh"/breath at sample 0) via an energy gate + 10 ms anti-click fade. `--no-trim-onset` keeps the raw vocoder output verbatim.
+- `--no-streaming-decode` — the patch encoder re-encodes each generated patch incrementally (maintained conv tail + per-layer KV caches), which is **O(n)** instead of the legacy recompute-full's O(n²)-total. Streaming is **on by default** and numerically identical to recompute-full (the encoder is fully causal, no rotary/qk-norm); `--no-streaming-decode` selects the recompute-full fallback for A/B / debugging.
 
 ## Python API
 
