@@ -155,9 +155,32 @@ Key flags:
 - `--trim-onset` / `--no-trim-onset` — `--trim-onset` is **on by default**: it removes the fixed ~50–150 ms BigVGAN vocoder onset transient (a soft "hhh"/breath at sample 0) via an energy gate + 10 ms anti-click fade. `--no-trim-onset` keeps the raw vocoder output verbatim.
 - `--no-streaming-decode` — the patch encoder re-encodes each generated patch incrementally (maintained conv tail + per-layer KV caches), which is **O(n)** instead of the legacy recompute-full's O(n²)-total. Streaming is **on by default** and numerically identical to recompute-full (the encoder is fully causal, no rotary/qk-norm); `--no-streaming-decode` selects the recompute-full fallback for A/B / debugging.
 
+## Choosing a reference
+
+The voice clone uses the reference **two ways**, and you choose which:
+
+- **x-vector-only** (`--ref-audio` only, *no* `--ref-text`): a CAM++ speaker fingerprint
+  conditions the *identity*. It is **robust and length-insensitive** (clip length barely
+  matters), adds **no per-chunk cost** under `--long`, and lets the model use its own natural
+  prosody. **This is the safe default** — especially when you don't have an exact transcript of
+  the reference clip.
+- **reference + transcript** (`--ref-audio` **+** `--ref-text`): also feeds the reference audio
+  and its transcript as an in-context prefix the model *continues*, so it matches the
+  reference's delivery more closely. The `--ref-text` must be **what is actually spoken in the
+  reference clip** — it is **never** part of the output; only your `--text` is synthesized.
+
+**Keep the reference short (a few seconds).** A longer reference does **not** improve adherence,
+and in the in-context path it costs noticeably more time — the model re-attends the whole
+reference on every step (and on every sentence under `--long`). With a short, accurate transcript
+the in-context path can sound a touch closer to the reference; otherwise **x-vector-only is the
+robust, faster choice.**
+
 ## Long / multilingual text (`--long`)
 
-For long passages, generate sentence-by-sentence with `--long`:
+dots.tts is autoregressive, so **generation cost grows as the clip gets longer** (each new
+moment attends over everything generated so far), and on long input the model can also **stop
+early or drift** — most visibly in non-English languages. `--long` addresses both by generating
+**one sentence at a time** and stitching the results:
 
 ```bash
 dots-tts --text "First sentence. Second sentence. ..." \
@@ -168,16 +191,23 @@ dots-tts --text "नमस्ते दोस्तों। यह एक ल�
     --ref-audio ref.wav --language HI --long
 ```
 
-`--long` splits the text into sentences (a word-safe length cap sub-splits any over-long
-sentence, never mid-word or mid-character), generates each chunk independently, and
-concatenates them with short gaps (`--gap-ms`, default 80; `--max-chars` overrides the
-per-chunk cap). This **fixes long-text truncation and drift** — the single-pass model can
-stop early or wander on long input, especially in non-English languages — and keeps
-generation **linear** in length (modestly faster on long clips; it is not a per-clip
-speedup). `--speed` and `--profile` work with `--long`.
+It splits the text into sentences — a **word-safe** length cap sub-splits any over-long
+sentence (never mid-word or mid-character) — generates each chunk independently, and
+concatenates with a short silence gap (`--gap-ms`, default 80; `--max-chars` overrides the
+per-chunk cap). Because every chunk stays short:
 
-> **Coming soon — faster generation (~2.3×):** a MeanFlow few-step decoder will cut
-> per-clip time substantially. `--long` is the correctness/robustness fix that lands first.
+- **No truncation or drift** — each sentence gets a fresh, in-range context, so the whole
+  passage is spoken, in any language.
+- **Cost stays linear in length** instead of ballooning — so long passages stay tractable and
+  are modestly quicker than one long pass. (It is *not* a per-clip speed-up — that's the
+  [Roadmap](#roadmap).)
+
+**Reference cost under `--long`.** Each chunk re-applies the reference. If you clone **with a
+transcript** (in-context), that reference prefix is re-attended for *every* sentence — so for
+long text prefer a **short reference** or **x-vector-only** (see
+[Choosing a reference](#choosing-a-reference)), and/or
+[enroll the voice once](#enroll-once-reuse-a-voice) so the reference encode isn't recomputed per
+sentence. `--speed` and `--profile` both work with `--long`.
 
 ## Python API
 
@@ -235,6 +265,9 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 - **Portable across precisions:** a profile enrolled on int4 also loads on int8 / bf16
   (the cached conditioning comes from bf16-only components). Loading against a different
   model raises a clear error.
+- **Pairs with `--long`:** chunked long-form generation otherwise re-encodes the reference
+  **once per sentence**. A profile (or an x-vector-only clone) does that work **once**, so
+  enrolling and passing `--profile` is the efficient way to clone a voice across a long passage.
 - `--enroll` requires `--ref-text`; `--profile` is mutually exclusive with `--ref-audio`/`--ref-text`.
   (X-vector-only clones — no `--ref-text` — are already cheap at ~6 GB and need no profile.)
 
@@ -244,6 +277,19 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 > addition for Apple Silicon: do that work once, persist the small result (<2 MB), and skip it on every
 > later call — so steady-state generation fits in **~6.6 GB instead of ~10.8 GB** and is faster, with
 > **bit-identical** output. It does not change the model or the inference math.
+
+## Roadmap
+
+- **Faster per-clip generation (coming soon).** Because the model is autoregressive, longer clips
+  cost more, and per-clip time is dominated by the flow-matching denoiser's step count. A
+  **MeanFlow** few-step decoder (distilled from the same model) is planned to cut that step count
+  substantially — making *every* clip quicker, on top of what `--long` already does for long
+  passages. `--long` (keeps long-form **linear** and drift-free) is the scaling/correctness fix
+  that ships first; MeanFlow is the per-clip speed-up that follows.
+- **Cheaper cloned chunking.** Reusing one enrolled reference across `--long` chunks (so the
+  in-context prefix isn't re-attended per sentence) is a planned optimization; today, prefer
+  x-vector-only or a short reference for long cloned passages (see
+  [Choosing a reference](#choosing-a-reference)).
 
 ## How it was ported / parity
 
