@@ -138,8 +138,16 @@ needed to run — the original checkpoint + `[oracle]` extra can be removed afte
 `dots.tts-mf` is a distilled checkpoint that runs the acoustic DiT at **NFE=4 with no
 classifier-free guidance** instead of the standard ~10-step flow-matching sampler —
 ~1.6–2.2× faster per clip (≈2.3× on the DiT-dominated cost), with no measurable quality
-loss. It is a **separate checkpoint** (soar + a `duration_embedder`); convert it to its
-own MLX dir and point the CLI at it:
+loss. It is a **separate checkpoint** (soar + a `duration_embedder`).
+
+**Ready-to-run weights** are on Hugging Face alongside soar — grab `mf-int4` (recommended) or `mf-int8`:
+
+```bash
+hf download shraey/dots-tts-mlx --include "mf-int4/*" --local-dir ./mf-weights
+dots-tts --model ./mf-weights/mf-int4 --text "..." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
+```
+
+Or build it from source (convert + quantize):
 
 ```bash
 python -m dots_tts_mlx.convert --src weights/dots_tts_src/dots.tts-mf --out weights/dots_tts_mlx_mf
