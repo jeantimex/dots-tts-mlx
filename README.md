@@ -240,8 +240,8 @@ per-chunk cap). Because every chunk stays short:
 - **No truncation or drift** — each sentence gets a fresh, in-range context, so the whole
   passage is spoken, in any language.
 - **Cost stays linear in length** instead of ballooning — so long passages stay tractable and
-  are modestly quicker than one long pass. (It is *not* a per-clip speed-up — that's the
-  [Roadmap](#roadmap).)
+  are modestly quicker than one long pass. (It is *not* a per-clip speed-up — for that, use the
+  [MeanFlow decoder](#meanflow-few-step-decoder-the-mf-checkpoint).)
 
 **Reference cost under `--long`.** Each chunk re-applies the reference. If you clone **with a
 transcript** (in-context), that reference prefix is re-attended for *every* sentence — so for
@@ -335,12 +335,6 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 
 ## Roadmap
 
-- **Faster per-clip generation (coming soon).** Because the model is autoregressive, longer clips
-  cost more, and per-clip time is dominated by the flow-matching denoiser's step count. A
-  **MeanFlow** few-step decoder (distilled from the same model) is planned to cut that step count
-  substantially — making *every* clip quicker, on top of what `--long` already does for long
-  passages. `--long` (keeps long-form **linear** and drift-free) is the scaling/correctness fix
-  that ships first; MeanFlow is the per-clip speed-up that follows.
 - **Cheaper cloned chunking.** Reusing one enrolled reference across `--long` chunks (so the
   in-context prefix isn't re-attended per sentence) is a planned optimization; today, prefer
   x-vector-only or a short reference for long cloned passages (see
