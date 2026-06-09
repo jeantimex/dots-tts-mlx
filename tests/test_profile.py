@@ -1,7 +1,7 @@
 import mlx.core as mx
 import numpy as np
 
-from dots_tts_mlx.profile import SpeakerProfile
+from dots_tts_mlx.profile import SCHEMA_VERSION, SpeakerProfile
 
 
 def _toy_profile() -> SpeakerProfile:
@@ -24,7 +24,7 @@ def _toy_profile() -> SpeakerProfile:
         sample_rate=48000,
         dtype="bfloat16",
         compat_hash="deadbeef",
-        schema_version=1,
+        schema_version=SCHEMA_VERSION,
     )
 
 
@@ -45,7 +45,7 @@ def test_save_load_roundtrip(tmp_path):
     assert q.speaker_scale == 1.5
     assert q.dtype == "bfloat16"
     assert q.compat_hash == "deadbeef"
-    assert q.schema_version == 1
+    assert q.schema_version == SCHEMA_VERSION
 
 
 def test_load_missing_files_raises(tmp_path):
@@ -54,6 +54,21 @@ def test_load_missing_files_raises(tmp_path):
     (tmp_path / "empty.dtprofile").mkdir()
     with pytest.raises(FileNotFoundError):
         SpeakerProfile.load(tmp_path / "empty.dtprofile")
+
+
+def test_v1_profile_rejected_on_load(tmp_path):
+    import json
+
+    import pytest
+
+    prof = _toy_profile()
+    prof.save(tmp_path / "v.dtprofile")
+    meta_path = tmp_path / "v.dtprofile" / "profile.json"
+    meta = json.loads(meta_path.read_text())
+    meta["schema_version"] = 1
+    meta_path.write_text(json.dumps(meta))
+    with pytest.raises(ValueError, match="schema_version"):
+        SpeakerProfile.load(tmp_path / "v.dtprofile")
 
 
 # --- model-compat hash tests (Task 2) ---
