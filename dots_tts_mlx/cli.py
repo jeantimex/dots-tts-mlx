@@ -115,6 +115,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=80,
         help="Silence (ms) inserted between sentence chunks in --long mode.",
     )
+    ap.add_argument(
+        "--no-retry-degenerate",
+        dest="retry_degenerate",
+        action="store_false",
+        help="(--long) disable the per-chunk reseed-retry guard (default: on).",
+    )
+    ap.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="(--long) max reseed-retries per degenerate chunk (default 2; 0 = off).",
+    )
     return ap
 
 
@@ -149,7 +161,11 @@ def main() -> int:
 
         prof = SpeakerProfile.load(args.profile)
         _gen = model.generate_long if args.long else model.generate
-        _kw = {"gap_ms": args.gap_ms, "max_chars": args.max_chars} if args.long else {}
+        _kw = (
+            {"gap_ms": args.gap_ms, "max_chars": args.max_chars,
+             "retry_degenerate": args.retry_degenerate, "max_retries": args.max_retries}
+            if args.long else {}
+        )
         out = _gen(
             text=args.text,
             profile=prof,
@@ -166,7 +182,11 @@ def main() -> int:
         if not args.ref_audio:
             ap.error("--ref-audio is required (or pass --profile)")
         _gen = model.generate_long if args.long else model.generate
-        _kw = {"gap_ms": args.gap_ms, "max_chars": args.max_chars} if args.long else {}
+        _kw = (
+            {"gap_ms": args.gap_ms, "max_chars": args.max_chars,
+             "retry_degenerate": args.retry_degenerate, "max_retries": args.max_retries}
+            if args.long else {}
+        )
         out = _gen(
             text=args.text,
             prompt_audio=args.ref_audio,

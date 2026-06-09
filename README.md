@@ -209,6 +209,13 @@ long text prefer a **short reference** or **x-vector-only** (see
 [enroll the voice once](#enroll-once-reuse-a-voice) so the reference encode isn't recomputed per
 sentence. `--speed` and `--profile` both work with `--long`.
 
+> **Self-healing chunks (v0.5.1).** Under `--long`, each sentence chunk is health-checked
+> (finite, non-silent, not absurdly short for its text); a degenerate chunk is regenerated
+> with a fresh seed (default up to 2 retries). Disable with `--no-retry-degenerate`, tune
+> with `--max-retries N`. Healthy chunks are unchanged (retries only fire on failure). The
+> cheap guard catches truncation; callers with ASR can pass `generate_long(validator=…)` to
+> also catch same-length hallucinations (the CLI stays dependency-free).
+
 ## Python API
 
 ```python
