@@ -45,6 +45,7 @@ import gc
 import math
 import wave
 from pathlib import Path
+from typing import Callable
 
 import mlx.core as mx
 import numpy as np
@@ -744,6 +745,9 @@ class DotsTtsModel:
         streaming_decode: bool = True,
         gap_ms: int = 80,
         max_chars: int | None = None,
+        retry_degenerate: bool = True,
+        max_retries: int = 2,
+        validator: "Callable[[np.ndarray, str, int], bool] | None" = None,  # noqa: F821
     ) -> dict:
         """Render long/multilingual text by sentence-chunking.
 
@@ -759,16 +763,25 @@ class DotsTtsModel:
         ``{"audio": [1, T], "sample_rate", "num_chunks", "num_patches"}``. (Speed is a CLI
         post-process, matching ``generate``.)
         """
-        from .chunking import assemble_chunks, resolve_max_chars, split_for_generation
+        from .chunking import (
+            assemble_chunks,
+            chunk_health,
+            resolve_max_chars,
+            split_for_generation,
+        )
 
         cap = int(max_chars) if max_chars else resolve_max_chars(text, language=language)
         chunks = split_for_generation(text, max_chars=cap, language=language)
         if not chunks:
             raise ValueError("generate_long: text is empty after splitting.")
 
+        max_retries = max(0, int(max_retries))
         pieces: list[np.ndarray] = []
         total_patches = 0
-        for chunk in chunks:
+        total_retries = 0
+        unrecovered = 0
+
+        def _gen_once(chunk: str, chunk_seed: int):
             out = self.generate(
                 chunk,
                 prompt_audio=prompt_audio,
@@ -778,14 +791,44 @@ class DotsTtsModel:
                 guidance_scale=guidance_scale,
                 speaker_scale=speaker_scale,
                 language=language,
-                seed=seed,
+                seed=chunk_seed,
                 max_generate_length=max_generate_length,
                 eos_threshold=eos_threshold,
                 trim_onset=trim_onset,
                 streaming_decode=streaming_decode,
             )
-            pieces.append(np.asarray(out["audio"][0].astype(mx.float32)))
-            total_patches += int(out["num_patches"])
+            return np.asarray(out["audio"][0].astype(mx.float32)), int(out["num_patches"])
+
+        def _accept(audio_np: np.ndarray, chunk: str) -> bool:
+            if not chunk_health(audio_np, chunk, self.sample_rate, language=language):
+                return False
+            if validator is not None:
+                try:
+                    return bool(validator(audio_np, chunk, self.sample_rate))
+                except Exception:  # noqa: BLE001 -- a flaky validator must not crash the render
+                    return False
+            return True
+
+        for i, chunk in enumerate(chunks):
+            best_audio, best_patches = _gen_once(chunk, seed)  # attempt 0 = current seed
+            accepted = _accept(best_audio, chunk)
+            attempt = 0
+            while not accepted and retry_degenerate and attempt < max_retries:
+                attempt += 1
+                total_retries += 1
+                mx.synchronize()
+                mx.clear_cache()
+                gc.collect()
+                chunk_seed = int(seed) + 1_000_003 * (i + 1) + 101 * attempt
+                cand_audio, cand_patches = _gen_once(chunk, chunk_seed)
+                if _accept(cand_audio, chunk):
+                    best_audio, best_patches, accepted = cand_audio, cand_patches, True
+                elif cand_audio.size > best_audio.size:
+                    best_audio, best_patches = cand_audio, cand_patches
+            if not accepted:
+                unrecovered += 1
+            pieces.append(best_audio)
+            total_patches += best_patches
             mx.synchronize()
             mx.clear_cache()
             gc.collect()
@@ -796,6 +839,8 @@ class DotsTtsModel:
             "sample_rate": self.sample_rate,
             "num_chunks": len(chunks),
             "num_patches": total_patches,
+            "retries": total_retries,
+            "unrecovered": unrecovered,
         }
 
     # endregion generate
