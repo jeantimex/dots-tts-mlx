@@ -130,3 +130,41 @@ def assemble_chunks(wavs: list[np.ndarray], sample_rate: int, gap_ms: int) -> np
             pieces.append(gap)
         pieces.append(w)
     return np.concatenate(pieces)
+
+
+# --- degenerate-chunk health check (used by generate_long's retry guard) ---
+_MIN_SILENCE_STD = 0.01      # below this RMS std -> silent/dead chunk
+_MIN_SEC_PER_WORD = 0.18     # truncation floor for spaced scripts (real speech ~0.3-0.5)
+_MIN_SEC_PER_CHAR_CJK = 0.12  # per-char floor for no-space scripts (CJK/Kana/Hangul)
+
+
+def _count_words(text: str) -> int:
+    return len([w for w in _WS_RE.split(text.strip()) if w])
+
+
+def chunk_health(
+    audio: np.ndarray, text: str, sample_rate: int, *, language: str | None = None
+) -> bool:
+    """Cheap, dependency-free heuristic: is this chunk's audio non-degenerate for ``text``?
+
+    Returns False for empty/non-finite/silent audio, or audio far too short for the text
+    (clear truncation). Does NOT detect same-length hallucination -- that needs an ASR
+    validator (see generate_long(validator=...)). Never raises on odd input.
+    """
+    a = np.asarray(audio).ravel()
+    if a.size == 0 or not np.all(np.isfinite(a)):
+        return False
+    if float(np.std(a)) <= _MIN_SILENCE_STD:
+        return False
+    t = (text or "").strip()
+    if not t:
+        return True
+    audio_s = a.size / float(sample_rate)
+    if _detect_script(t) == "cjk":
+        n_chars = sum(
+            1 for c in t if not c.isspace() and not unicodedata.category(c).startswith("P")
+        )
+        floor = _MIN_SEC_PER_CHAR_CJK * max(n_chars, 1)
+    else:
+        floor = _MIN_SEC_PER_WORD * max(_count_words(t), 1)
+    return audio_s >= floor
