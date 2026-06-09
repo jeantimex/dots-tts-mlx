@@ -644,6 +644,12 @@ def load_dit(
 
     The block attention runs on the fast (hp=False) path; see ``dit`` for numerics.
 
+    In meanflow mode (``config.json`` carries an enabled ``meanflow`` block) the
+    checkpoint additionally carries 4 ``velocity_field_predictor.duration_embedder.mlp.{0,2}.{weight,bias}``
+    keys; this loader binds them onto ``DiT.duration_embedder`` (a ``TimestepEmbedder``)
+    using the same ``_linear`` machinery as ``time_embedder``. In flow-matching mode
+    that submodule is ``None`` and those keys are absent.
+
     Args:
         path_to_core_safetensors: path to ``core.safetensors``.
         dtype: runtime dtype (``mx.float32`` for the parity gate).
@@ -674,6 +680,18 @@ def load_dit(
         _linear(w, "time_embedder.mlp.0", dtype),
         _linear(w, "time_embedder.mlp.2", dtype),
     )
+
+    duration_embedder = None
+    if config.mode == "meanflow":
+        if "duration_embedder.mlp.0.weight" not in w:
+            raise ValueError(
+                "config declares meanflow mode but core.safetensors has no "
+                "duration_embedder.* keys (wrong checkpoint?)."
+            )
+        duration_embedder = TimestepEmbedder(
+            _linear(w, "duration_embedder.mlp.0", dtype),
+            _linear(w, "duration_embedder.mlp.2", dtype),
+        )
 
     blocks: list[DiTBlock] = []
     for i in range(num_layers):
@@ -712,7 +730,7 @@ def load_dit(
         hidden_size=hidden,
     )
 
-    return DiT(input_layer, time_embedder, blocks, output_layer)
+    return DiT(input_layer, time_embedder, blocks, output_layer, duration_embedder=duration_embedder)
 
 
 def load_coordinate_proj(

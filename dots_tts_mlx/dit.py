@@ -2,7 +2,7 @@
 
 Imports ONLY mlx (+ the package's ``layers.py``) — never torch. Mirrors
 ``dots_tts.modules.backbone.dit`` for the shipped checkpoint (``mode="flow_matching"``,
-no meanflow duration embedder): an 18-layer adaLN-zero transformer that predicts a
+with an optional ``duration_embedder`` for the meanflow (``mf``) checkpoint): an 18-layer adaLN-zero transformer that predicts a
 denoising velocity for one VAE latent patch.
 
 Convention (M1, matching ``layers.py``): plain classes holding ``mx.array`` weights
@@ -159,9 +159,11 @@ class DiTBlock:
 class DiT:
     """Flow-matching DiT: predicts a velocity for one VAE latent patch.
 
-    ``__call__(x, timesteps, attn_mask, pos_ids, g_cond)``:
+    ``__call__(x, timesteps, attn_mask, pos_ids, g_cond, duration)``:
 
         c = time_embedder(timesteps)        # [B, 1024]
+        c = c + duration_embedder(duration) # optional: c = c + duration_embedder(duration)
+                                            # (meanflow mode only; omitted for flow_matching)
         c = c + g_cond                      # global conditioning, [B, 1024]
         x = input_layer(x)                  # Linear(in_dim -> 1024)
         for block: x = block(x, c, mask=attn_mask, pos_ids=pos_ids)
@@ -174,9 +176,11 @@ class DiT:
         time_embedder: TimestepEmbedder,
         blocks: list[DiTBlock],
         output_layer: FinalLayer,
+        duration_embedder: TimestepEmbedder | None = None,
     ):
         self.input_layer = input_layer
         self.time_embedder = time_embedder
+        self.duration_embedder = duration_embedder
         self.blocks = blocks
         self.output_layer = output_layer
 
@@ -188,8 +192,11 @@ class DiT:
         attn_mask: mx.array | None = None,
         pos_ids: mx.array | None = None,
         g_cond: mx.array | None = None,
+        duration: mx.array | None = None,
     ) -> mx.array:
         c = self.time_embedder(timesteps)  # [B, 1024]
+        if self.duration_embedder is not None and duration is not None:
+            c = c + self.duration_embedder(duration)  # MeanFlow average-velocity signal
         if g_cond is not None:
             c = c + g_cond
         x = self.input_layer(x)  # [B, L, 1024]
@@ -342,4 +349,53 @@ class FlowSolver:
                 guidance_scale=guidance_scale,
             )
             z = z + dt * v
+        return z
+
+    def meanflow_sample(
+        self,
+        *,
+        input_sequence: mx.array,
+        attn_mask: mx.array | None,
+        pos_ids: mx.array | None,
+        g_cond: mx.array,
+        num_steps: int = 4,
+        patch_size: int = 4,
+        noise: mx.array,
+    ) -> mx.array:
+        """Distilled MeanFlow few-step sampler (NFE = ``num_steps``, NO CFG).
+
+        Mirrors upstream ``_meanflow_step_fm`` / ``meanflow_solver_step``: the DiT
+        predicts the AVERAGE velocity over the interval ``[t, t+dt]`` (it receives both
+        ``t`` and ``dt`` as ``duration``), so a single forward per step advances the full
+        ``dt``. No classifier-free guidance — one conditional branch with the real
+        ``g_cond`` (guidance is fused into the distilled student). Uniform schedule on
+        ``[0, 1]``: ``t_k = k/nfe``, ``dt = 1/nfe``.
+
+        Args:
+            input_sequence: the conditional sequence ``[1, L, hidden]``; its last
+                ``patch_size`` slots are overwritten by the projected ``z`` each step.
+            attn_mask / pos_ids: the ``[1, L, L]`` mask / ``[1, L]`` positions.
+            g_cond: global conditioning ``[1, hidden]`` (already scaled upstream).
+            num_steps: NFE (number of DiT forwards). Distilled to work at 2-4.
+            patch_size: number of latent slots to denoise.
+            noise: the injected initial coordinate ``[1, patch_size, latent_dim]``.
+
+        Returns:
+            the denoised latent patch ``[1, patch_size, latent_dim]`` (at t=1).
+        """
+        rdtype = input_sequence.dtype
+        z = noise.astype(rdtype)
+        latent_start = input_sequence.shape[1] - patch_size
+        g = g_cond.astype(rdtype)
+        inv = 1.0 / num_steps
+        for k in range(num_steps):
+            t = mx.array([k * inv], dtype=rdtype)
+            dt = mx.array([inv], dtype=rdtype)
+            z_proj = self.coordinate_proj(z).astype(rdtype)
+            seq = mx.concatenate([input_sequence[:, :latent_start], z_proj], axis=1)
+            v = self.dit(
+                seq, t, attn_mask=attn_mask, pos_ids=pos_ids, g_cond=g, duration=dt
+            )
+            v = v[:, latent_start:]  # [1, patch_size, latent_dim]
+            z = z + v * inv
         return z

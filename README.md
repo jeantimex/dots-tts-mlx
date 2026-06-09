@@ -133,6 +133,47 @@ python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx --out weights/dots_tt
 runtime. `quantize` needs only `mlx` + `mlx-lm` (no torch). Only the converted/quantized artifacts are
 needed to run — the original checkpoint + `[oracle]` extra can be removed afterward.
 
+### MeanFlow few-step decoder (the `mf` checkpoint)
+
+`dots.tts-mf` is a distilled checkpoint that runs the acoustic DiT at **NFE=4 with no
+classifier-free guidance** instead of the standard ~10-step flow-matching sampler —
+~1.6–2.2× faster per clip (≈2.3× on the DiT-dominated cost), with no measurable quality
+loss. It is a **separate checkpoint** (soar + a `duration_embedder`).
+
+**Ready-to-run weights** are on Hugging Face alongside soar — grab `mf-int4` (recommended) or `mf-int8`:
+
+```bash
+hf download shraey/dots-tts-mlx --include "mf-int4/*" --local-dir ./mf-weights
+dots-tts --model ./mf-weights/mf-int4 --text "..." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
+```
+
+Or build it from source (convert + quantize):
+
+```bash
+python -m dots_tts_mlx.convert --src weights/dots_tts_src/dots.tts-mf --out weights/dots_tts_mlx_mf
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_bf16 --bits 16
+dots-tts --model weights/dots_tts_mlx_mf_bf16 --text "..." --ref-audio ref.wav --ref-text "..." --language EN
+```
+
+MeanFlow mode is **auto-detected** from the checkpoint's `config.json` (`meanflow` block) —
+there is no flag to set. `--num-steps` then defaults to 4 (it is the NFE); `--guidance-scale`
+is ignored (CFG is fused into the distilled student). The flow-matching (`soar`) path is
+unchanged.
+
+The mf checkpoint quantizes exactly like soar — the quantizer targets only the LLM trunk, so
+the `duration_embedder` stays bf16 and meanflow mode is preserved across all variants:
+
+```bash
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int8 --bits 8
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int4 --bits 4
+```
+
+| mf variant | `core.safetensors` | runtime peak (render) |
+|---|---|---|
+| bf16 | ~4.2 GB | ~19 GB (loaded alongside soar) |
+| int8 | ~2.8 GB | ~13.3 GB |
+| int4 | ~2.1 GB | ~12.6 GB |
+
 ## CLI usage
 
 ```bash
@@ -199,8 +240,8 @@ per-chunk cap). Because every chunk stays short:
 - **No truncation or drift** — each sentence gets a fresh, in-range context, so the whole
   passage is spoken, in any language.
 - **Cost stays linear in length** instead of ballooning — so long passages stay tractable and
-  are modestly quicker than one long pass. (It is *not* a per-clip speed-up — that's the
-  [Roadmap](#roadmap).)
+  are modestly quicker than one long pass. (It is *not* a per-clip speed-up — for that, use the
+  [MeanFlow decoder](#meanflow-few-step-decoder-the-mf-checkpoint).)
 
 **Reference cost under `--long`.** Each chunk re-applies the reference. If you clone **with a
 transcript** (in-context), that reference prefix is re-attended for *every* sentence — so for
@@ -294,12 +335,6 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 
 ## Roadmap
 
-- **Faster per-clip generation (coming soon).** Because the model is autoregressive, longer clips
-  cost more, and per-clip time is dominated by the flow-matching denoiser's step count. A
-  **MeanFlow** few-step decoder (distilled from the same model) is planned to cut that step count
-  substantially — making *every* clip quicker, on top of what `--long` already does for long
-  passages. `--long` (keeps long-form **linear** and drift-free) is the scaling/correctness fix
-  that ships first; MeanFlow is the per-clip speed-up that follows.
 - **Cheaper cloned chunking.** Reusing one enrolled reference across `--long` chunks (so the
   in-context prefix isn't re-attended per sentence) is a planned optimization; today, prefer
   x-vector-only or a short reference for long cloned passages (see

@@ -49,8 +49,20 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="uppercase ISO code (e.g. EN/DE/ES/FR/HI); default None = no tag.",
     )
-    ap.add_argument("--num-steps", type=int, default=10)
-    ap.add_argument("--guidance-scale", type=float, default=1.2)
+    ap.add_argument(
+        "--num-steps",
+        type=int,
+        default=None,
+        help="solver steps. Default resolves per checkpoint: 4 (meanflow/mf) or 10 "
+        "(flow-matching/soar). Pass an explicit value to override (e.g. NFE 2 for mf).",
+    )
+    ap.add_argument(
+        "--guidance-scale",
+        type=float,
+        default=1.2,
+        help="CFG scale (flow-matching only; ignored by the meanflow/mf checkpoint, "
+        "which has CFG fused into the distilled student).",
+    )
     ap.add_argument("--speaker-scale", type=float, default=1.5)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--max-generate-length", type=int, default=500)

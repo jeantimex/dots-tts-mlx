@@ -121,3 +121,17 @@ def test_cli_retry_flags_parse():
     assert ns.retry_degenerate is True and ns.max_retries == 2
     ns2 = p.parse_args(["--text", "hi", "--no-retry-degenerate", "--max-retries", "5"])
     assert ns2.retry_degenerate is False and ns2.max_retries == 5
+
+
+def test_num_steps_default_is_none_for_per_mode_resolution():
+    from dots_tts_mlx.cli import build_parser
+
+    args = build_parser().parse_args(["--text", "hi", "--ref-audio", "r.wav"])
+    assert args.num_steps is None  # resolved per-mode inside generate (4 meanflow / 10 FM)
+
+
+def test_num_steps_explicit_still_parses():
+    from dots_tts_mlx.cli import build_parser
+
+    args = build_parser().parse_args(["--text", "hi", "--ref-audio", "r.wav", "--num-steps", "4"])
+    assert args.num_steps == 4
