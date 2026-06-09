@@ -55,10 +55,12 @@ def test_prefill_patch_emb_passthrough():
         m._denorm_patch_history = [denorm[:, i * m.patch_size : (i + 1) * m.patch_size] for i in range(s)]
         cache = m.llm.make_cache()
         m._prefill(ids, sched, span_positions=spans, prompt_patches=patches,
-                   patch_emb=patch_emb, cache=cache)
+                   prompt_denorm_latents=denorm, patch_emb=patch_emb, cache=cache)
         return m._last_prefill_hidden, mx.concatenate(m._fm_chunks, axis=1)
 
-    flat = patches.reshape(1, s * m.patch_size, m.latent_dim)
+    # patch_emb is recomputed from DENORMALIZED latents (the in-context fix), so the
+    # precomputed reference must use the same denorm input to match run(None).
+    flat = denorm[:, : s * m.patch_size]
     precomputed = m.patch_encoder(flat).astype(m.dtype)
     h_none, fm_none = run(None)
     h_pre, fm_pre = run(precomputed)

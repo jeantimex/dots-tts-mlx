@@ -234,6 +234,13 @@ sr = out["sample_rate"]                            # 48000
 
 ## Enroll once, reuse a voice
 
+> **v0.5.0 — re-enroll required.** v0.5.0 corrects the in-context prompt-embedding latent
+> scale: the patch encoder is now fed *denormalized* reference latents (matching upstream),
+> fixing reference conditioning on the `--ref-text` / `prompt_text` path. Profiles enrolled
+> on ≤ v0.4.x (`schema_version` 1) cached the old (normalized-derived) embedding and are
+> **rejected on load by design** — just re-run `--enroll` to regenerate them. Model weights
+> are unchanged.
+
 Compute a voice's reference conditioning **once**, save it to disk, and reuse it for every
 later generation — so you never re-pass the reference, and the expensive reference encode
 (CAM++ x-vector + the AudioVAE encode of the reference + the patch-encoder pass) is paid

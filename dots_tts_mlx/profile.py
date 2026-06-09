@@ -15,7 +15,8 @@ from pathlib import Path
 
 import mlx.core as mx
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # bumped from 1: in-context patch_emb now derived from denormalized
+                    # latents; v1 profiles cached the wrong (normalized-derived) patch_emb.
 _ARRAY_FIELDS = ("g_cond", "prompt_patches", "prompt_denorm_latents", "patch_emb")
 _META_FIELDS = (
     "prompt_text",

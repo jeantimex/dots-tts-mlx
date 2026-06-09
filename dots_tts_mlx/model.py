@@ -622,6 +622,7 @@ class DotsTtsModel:
             schedule,
             span_positions=span_positions,
             prompt_patches=prompt_patches,
+            prompt_denorm_latents=prompt_denorm_latents,
             cache=cache,
             patch_emb=patch_emb_override,
         )
@@ -883,7 +884,7 @@ class DotsTtsModel:
             prompt_audio48k, use_prompt_prefill=True, speaker_scale=speaker_scale
         )
         s = int(prompt_patches.shape[1])
-        flat = prompt_patches.reshape(1, s * self.patch_size, self.latent_dim)
+        flat = prompt_denorm_latents[:, : s * self.patch_size]  # denormalized
         patch_emb = self.patch_encoder(flat).astype(self.dtype)
         mx.eval(g_cond, prompt_patches, prompt_denorm_latents, patch_emb)
 
@@ -910,6 +911,7 @@ class DotsTtsModel:
         *,
         span_positions: list[int],
         prompt_patches: mx.array | None,
+        prompt_denorm_latents: mx.array | None = None,
         cache,
         patch_emb: mx.array | None = None,
     ) -> int:
@@ -937,9 +939,17 @@ class DotsTtsModel:
             # patch_emb is supplied by the profile path (precomputed at enroll); else
             # recompute it here — numerically identical, so the ref-audio path is unchanged.
             if patch_emb is None:
-                flat = prompt_patches.reshape(
-                    1, prompt_patch_count * self.patch_size, self.latent_dim
-                )
+                # The patch encoder operates on DENORMALIZED latents (matches upstream's
+                # patch_encoder.prefill(prompt_latents) and our streaming-state prefill).
+                # prompt_patches (normalized) is the FM-history input only -- NOT this.
+                if prompt_denorm_latents is None:
+                    raise ValueError(
+                        "_prefill requires prompt_denorm_latents to recompute patch_emb "
+                        "when patch_emb is not supplied (the profile path)."
+                    )
+                flat = prompt_denorm_latents[
+                    :, : prompt_patch_count * self.patch_size
+                ]  # [1, S*patch_size, 128] denormalized
                 patch_emb = self.patch_encoder(flat)
             patch_emb = patch_emb.astype(inputs_embeds.dtype)  # [1, S, 1536]
             # scatter into the prompt span slots.
