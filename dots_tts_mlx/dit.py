@@ -2,7 +2,7 @@
 
 Imports ONLY mlx (+ the package's ``layers.py``) — never torch. Mirrors
 ``dots_tts.modules.backbone.dit`` for the shipped checkpoint (``mode="flow_matching"``,
-no meanflow duration embedder): an 18-layer adaLN-zero transformer that predicts a
+with an optional ``duration_embedder`` for the meanflow (``mf``) checkpoint): an 18-layer adaLN-zero transformer that predicts a
 denoising velocity for one VAE latent patch.
 
 Convention (M1, matching ``layers.py``): plain classes holding ``mx.array`` weights
@@ -159,9 +159,11 @@ class DiTBlock:
 class DiT:
     """Flow-matching DiT: predicts a velocity for one VAE latent patch.
 
-    ``__call__(x, timesteps, attn_mask, pos_ids, g_cond)``:
+    ``__call__(x, timesteps, attn_mask, pos_ids, g_cond, duration)``:
 
         c = time_embedder(timesteps)        # [B, 1024]
+        c = c + duration_embedder(duration) # optional: c = c + duration_embedder(duration)
+                                            # (meanflow mode only; omitted for flow_matching)
         c = c + g_cond                      # global conditioning, [B, 1024]
         x = input_layer(x)                  # Linear(in_dim -> 1024)
         for block: x = block(x, c, mask=attn_mask, pos_ids=pos_ids)
@@ -174,9 +176,11 @@ class DiT:
         time_embedder: TimestepEmbedder,
         blocks: list[DiTBlock],
         output_layer: FinalLayer,
+        duration_embedder: TimestepEmbedder | None = None,
     ):
         self.input_layer = input_layer
         self.time_embedder = time_embedder
+        self.duration_embedder = duration_embedder
         self.blocks = blocks
         self.output_layer = output_layer
 
@@ -188,8 +192,11 @@ class DiT:
         attn_mask: mx.array | None = None,
         pos_ids: mx.array | None = None,
         g_cond: mx.array | None = None,
+        duration: mx.array | None = None,
     ) -> mx.array:
         c = self.time_embedder(timesteps)  # [B, 1024]
+        if self.duration_embedder is not None and duration is not None:
+            c = c + self.duration_embedder(duration)  # MeanFlow average-velocity signal
         if g_cond is not None:
             c = c + g_cond
         x = self.input_layer(x)  # [B, L, 1024]
