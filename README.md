@@ -152,6 +152,20 @@ there is no flag to set. `--num-steps` then defaults to 4 (it is the NFE); `--gu
 is ignored (CFG is fused into the distilled student). The flow-matching (`soar`) path is
 unchanged.
 
+The mf checkpoint quantizes exactly like soar — the quantizer targets only the LLM trunk, so
+the `duration_embedder` stays bf16 and meanflow mode is preserved across all variants:
+
+```bash
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int8 --bits 8
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int4 --bits 4
+```
+
+| mf variant | `core.safetensors` | runtime peak (render) |
+|---|---|---|
+| bf16 | ~4.2 GB | ~19 GB (loaded alongside soar) |
+| int8 | ~2.8 GB | ~13.3 GB |
+| int4 | ~2.1 GB | ~12.6 GB |
+
 ## CLI usage
 
 ```bash
