@@ -133,6 +133,25 @@ python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx --out weights/dots_tt
 runtime. `quantize` needs only `mlx` + `mlx-lm` (no torch). Only the converted/quantized artifacts are
 needed to run — the original checkpoint + `[oracle]` extra can be removed afterward.
 
+### MeanFlow few-step decoder (the `mf` checkpoint)
+
+`dots.tts-mf` is a distilled checkpoint that runs the acoustic DiT at **NFE=4 with no
+classifier-free guidance** instead of the standard ~10-step flow-matching sampler —
+~1.6–2.2× faster per clip (≈2.3× on the DiT-dominated cost), with no measurable quality
+loss. It is a **separate checkpoint** (soar + a `duration_embedder`); convert it to its
+own MLX dir and point the CLI at it:
+
+```bash
+python -m dots_tts_mlx.convert --src weights/dots_tts_src/dots.tts-mf --out weights/dots_tts_mlx_mf
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_bf16 --bits 16
+dots-tts --model weights/dots_tts_mlx_mf_bf16 --text "..." --ref-audio ref.wav --ref-text "..." --language EN
+```
+
+MeanFlow mode is **auto-detected** from the checkpoint's `config.json` (`meanflow` block) —
+there is no flag to set. `--num-steps` then defaults to 4 (it is the NFE); `--guidance-scale`
+is ignored (CFG is fused into the distilled student). The flow-matching (`soar`) path is
+unchanged.
+
 ## CLI usage
 
 ```bash
