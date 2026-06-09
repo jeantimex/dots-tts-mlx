@@ -942,6 +942,11 @@ class DotsTtsModel:
                 # The patch encoder operates on DENORMALIZED latents (matches upstream's
                 # patch_encoder.prefill(prompt_latents) and our streaming-state prefill).
                 # prompt_patches (normalized) is the FM-history input only -- NOT this.
+                if prompt_denorm_latents is None:
+                    raise ValueError(
+                        "_prefill requires prompt_denorm_latents to recompute patch_emb "
+                        "when patch_emb is not supplied (the profile path)."
+                    )
                 flat = prompt_denorm_latents[
                     :, : prompt_patch_count * self.patch_size
                 ]  # [1, S*patch_size, 128] denormalized
