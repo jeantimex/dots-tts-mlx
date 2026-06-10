@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--ref-text",
         default=None,
-        help="reference transcript (prompt text). Omit -> x-vector-only clone.",
+        help="reference transcript (required with --ref-audio for cloning).",
     )
     ap.add_argument("--out-path", default="outputs/dots_tts")
     ap.add_argument("--out-prefix", default="dots_clone")
@@ -193,6 +193,11 @@ def main() -> int:
     else:
         if not args.ref_audio:
             ap.error("--ref-audio is required (or pass --profile)")
+        if not args.ref_text:
+            ap.error(
+                "--ref-text (the reference transcript) is required with --ref-audio. "
+                "The x-vector-only no-transcript clone has been removed."
+            )
         _gen = model.generate_long if args.long else model.generate
         _kw = (
             {"gap_ms": args.gap_ms, "max_chars": args.max_chars,
