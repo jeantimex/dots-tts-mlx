@@ -31,7 +31,7 @@ If you need any of those, use the upstream project: [code](https://github.com/re
 
 ## What it is
 
-- **Architecture:** Qwen2.5-1.5B-Base LLM backbone (BPE text, no phonemes) → AR flow-matching DiT head → 48 kHz AudioVAE with a BigVGAN-style causal decoder. A frozen CAM++ x-vector conditions the speaker identity.
+- **Architecture:** Qwen2.5-1.5B-Base LLM backbone (BPE text, no phonemes) → AR flow-matching DiT head → 48 kHz AudioVAE with a BigVGAN-style causal decoder. A frozen CAM++ speaker embedding conditions the speaker identity.
 - **Zero-shot voice clone:** one reference wav + its transcript clones the voice; cross-language transfer works from a single reference.
 - **Clean onsets:** continuous AR means no discrete-token warm-up — the clip opens on a real word.
 - **Two decoders:** `soar` (10-step, quality) and `mf` MeanFlow (NFE=4, **~2× faster**) — auto-detected from the weights; see [Two decoders](#two-decoders--soar-quality-and-meanflow-fast).
@@ -277,7 +277,7 @@ sr = out["sample_rate"]                            # 48000
 
 Compute a voice's reference conditioning **once**, save it to disk, and reuse it for every
 later generation — so you never re-pass the reference, and the expensive reference encode
-(CAM++ x-vector + the AudioVAE encode of the reference + the patch-encoder pass) is paid
+(the CAM++ speaker embedding + the AudioVAE encode of the reference + the patch-encoder pass) is paid
 **once at enrollment** instead of on every call.
 
 ```bash
@@ -312,7 +312,7 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 - `--enroll` requires `--ref-text`; `--profile` is mutually exclusive with `--ref-audio`/`--ref-text`.
 
 > **Why this exists / not in upstream.** Upstream `dots.tts` has no enroll/profile concept — it
-> re-encodes the reference (CAM++ x-vector + the AudioVAE encode + the patch-encoder pass) on **every**
+> re-encodes the reference (the CAM++ speaker embedding + the AudioVAE encode + the patch-encoder pass) on **every**
 > `generate`, and that encode is the ~10 GB memory high-water. This is a thin **runtime/app-layer**
 > addition for Apple Silicon: do that work once, persist the small result (<2 MB), and skip it on every
 > later call — so steady-state generation fits in **~6.6 GB instead of ~10.8 GB** and is faster, with
