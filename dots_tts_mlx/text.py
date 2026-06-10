@@ -140,7 +140,7 @@ class DotsTokenizer:
         Args:
             text: the target text to synthesize.
             prompt_text: the reference-audio transcript (prefixed before ``text``);
-                empty/None for x-vector-only conditioning.
+                empty/None for plain text-to-speech (no reference).
             language: optional uppercase ISO code; only prepended as a ``[CODE]`` tag
                 to ``text`` when there is NO prompt_text (matches upstream).
             max_audio_tokens: number of ``audio_gen_span`` placeholders to emit

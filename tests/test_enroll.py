@@ -40,7 +40,7 @@ def test_prefill_patch_emb_passthrough():
         a48 = np.pad(a48, (0, target - n))
 
     g, patches, denorm = m._prepare_prompt_conditioning(
-        a48, use_prompt_prefill=True, speaker_scale=1.5
+        a48, speaker_scale=1.5
     )
     s = int(patches.shape[1])
     ids = m.tokenizer.build_generation_schedule(

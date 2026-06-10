@@ -407,16 +407,18 @@ class DotsTtsModel:
         self,
         prompt_audio48k: np.ndarray | None,
         *,
-        use_prompt_prefill: bool,
         speaker_scale: float,
     ) -> tuple[mx.array | None, mx.array | None, mx.array | None]:
         """Return ``(g_cond [1, 1024], prompt_patches [1, S, patch_size, 128] | None,
         prompt_denorm_latents [1, S*patch_size, 128] | None)``.
 
+        For a reference clone (``prompt_audio48k`` given) this always builds the full
+        **in-context** prompt: the speaker ``g_cond`` plus the prefill latents.
         ``prompt_patches`` is the NORMALIZED, reshaped prompt latent (FM history +
         prefill scatter); ``prompt_denorm_latents`` is the matching DENORMALIZED stream
         that seeds the patch-encoder recompute-full history (upstream feeds the
-        denormalized ``prompt_latents_sampled`` into ``patch_encoder.prefill``).
+        denormalized ``prompt_latents_sampled`` into ``patch_encoder.prefill``). With no
+        reference audio (plain text-to-speech) it returns ``(None, None, None)``.
         """
         if prompt_audio48k is None:
             return None, None, None
@@ -432,9 +434,6 @@ class DotsTtsModel:
         speaker_embedding = xvec * float(speaker_scale)
         g_cond = self.xvec_proj(speaker_embedding.astype(self.dtype))  # [1, 1024]
         g_cond = g_cond.astype(self.dtype)
-
-        if not use_prompt_prefill:
-            return g_cond, None, None
 
         wav = mx.array(prompt_audio48k, dtype=mx.float32)[None, None]  # [1, 1, S]
         latent = self.vae.encode(wav)  # [1, 256, T]
@@ -567,11 +566,18 @@ class DotsTtsModel:
             prompt_audio48k = None
             if prompt_audio is not None:
                 prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
-            use_prompt_prefill = prompt_audio48k is not None and bool(prompt_text)
+            if prompt_audio48k is not None and not prompt_text:
+                raise ValueError(
+                    "Reference cloning requires the reference transcript "
+                    "(prompt_text / --ref-text). The x-vector-only (no-transcript) clone "
+                    "mode has been removed — it drifted on longer utterances. Pass the "
+                    "transcript, or omit the reference audio for plain text-to-speech."
+                )
+            # cloning => always in-context prefill; no reference => plain TTS.
+            use_prompt_prefill = prompt_audio48k is not None
             g_cond, prompt_patches, prompt_denorm_latents = (
                 self._prepare_prompt_conditioning(
                     prompt_audio48k,
-                    use_prompt_prefill=use_prompt_prefill,
                     speaker_scale=speaker_scale,
                 )
             )
@@ -955,7 +961,7 @@ class DotsTtsModel:
 
         prompt_audio48k = _load_prompt_audio48k(prompt_audio, self.sample_rate)
         g_cond, prompt_patches, prompt_denorm_latents = self._prepare_prompt_conditioning(
-            prompt_audio48k, use_prompt_prefill=True, speaker_scale=speaker_scale
+            prompt_audio48k, speaker_scale=speaker_scale
         )
         s = int(prompt_patches.shape[1])
         flat = prompt_denorm_latents[:, : s * self.patch_size]  # denormalized
