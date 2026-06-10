@@ -332,7 +332,7 @@ Every stage was gated numerically against the original PyTorch model (a dev-only
 |-------|--------|--------|
 | AudioVAE decode | PSNR vs torch | 55.67 dB |
 | AudioVAE encode | max-abs | 2.3e-4 |
-| CAM++ x-vector | cosine | 0.99999988 |
+| CAM++ speaker embedding | cosine | 0.99999988 |
 | Attention (rotary) | max-abs | 4.77e-7 |
 | DiT velocity field | cosine | 0.9999962 |
 | Semantic patch encoder | cosine / max-abs | 0.9999995 / 4.69e-4 |
@@ -368,7 +368,7 @@ This is a derivative port. The original model, its backbone, and the components 
 
 - **dots.tts** (`rednote-hilab/dots.tts-soar`) — **Apache-2.0**. The model, weights, and the *dots.tts Technical Report* (2026) are by the dots.tts team at rednote-hilab. [Model](https://huggingface.co/rednote-hilab/dots.tts-soar) · [Code](https://github.com/rednote-hilab/dots.tts) · [Demo](https://rednote-hilab.github.io/dots.tts-demo/)
 - **Qwen2.5-1.5B-Base** (LLM backbone) — **Apache-2.0** ([Qwen](https://huggingface.co/Qwen/Qwen2.5-1.5B)).
-- **CAM++ / 3D-Speaker** (speaker x-vector encoder) — **Apache-2.0** ([modelscope/3D-Speaker](https://github.com/modelscope/3D-Speaker)).
+- **CAM++ / 3D-Speaker** (speaker-embedding encoder) — **Apache-2.0** ([modelscope/3D-Speaker](https://github.com/modelscope/3D-Speaker)).
 - **BigVGAN** (the vocoder/decoder architecture style) — **MIT**, © NVIDIA ([NVIDIA/BigVGAN](https://github.com/NVIDIA/BigVGAN); parts adapted from [hifi-gan](https://github.com/jik876/hifi-gan), MIT).
 
 The MLX port code in this repository is licensed **Apache-2.0** (see [LICENSE](LICENSE)). You must comply with the upstream licenses for the model weights and any redistributed components.
