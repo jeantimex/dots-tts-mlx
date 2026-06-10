@@ -2,11 +2,13 @@
 
 A pure-[MLX](https://github.com/ml-explore/mlx) port of [`rednote-hilab/dots.tts`](https://github.com/rednote-hilab/dots.tts) — multilingual zero-shot voice-clone text-to-speech, running natively on Apple Silicon.
 
-dots.tts is a **2B-parameter, fully continuous, end-to-end autoregressive flow-matching** TTS model (the `dots.tts-soar` SCA checkpoint). Unlike discrete-codec TTS models that warm up from a quantized token stream, dots.tts is continuous AR — so the **first patch is already a crisp utterance onset**, with no warm-up mumble at sample 0. It clones a voice from a short reference clip and synthesizes into 24 languages.
+dots.tts is a **2B-parameter, fully continuous, end-to-end autoregressive flow-matching** TTS model. Unlike discrete-codec TTS models that warm up from a quantized token stream, dots.tts is continuous AR — so the **first patch is already a crisp utterance onset**, with no warm-up mumble at sample 0. It clones a voice from a short reference clip (audio + transcript) and synthesizes into 24 languages.
+
+Upstream ships two post-trained checkpoints and **this port supports both**: the standard `dots.tts-soar` (SCA) decoder for quality, and the distilled `dots.tts-mf` **MeanFlow** decoder — a few-step (NFE=4) variant that's **~2× faster per clip** (see [Two decoders](#two-decoders--soar-quality-and-meanflow-fast)).
 
 This repo is a clean-room MLX reimplementation of the runtime: no PyTorch calls in the inference path, gated per-stage against the original PyTorch model.
 
-> **Ready-to-run weights** are published on Hugging Face — [`shraey/dots-tts-mlx`](https://huggingface.co/shraey/dots-tts-mlx). **Download and run — no PyTorch and no conversion step.** The int4 build is **~2.4 GB vs the original ~9 GB (−73%)**, with **essentially identical quality in our acceptance tests**. `pip install` the runtime, `hf download` the weights, and go — see [Weights](#weights).
+> **Ready-to-run weights** are published on Hugging Face — [`shraey/dots-tts-mlx`](https://huggingface.co/shraey/dots-tts-mlx). **Download and run — no PyTorch and no conversion step.** Quantized int4 builds are **~2.4 GB vs the original ~9 GB (−73%)**, for both the `soar` (quality) and `mf` (fast) decoders. `pip install` the runtime, `hf download` the weights, and go — see [Weights](#weights).
 
 ## Scope — what this is / isn't
 
@@ -30,8 +32,22 @@ If you need any of those, use the upstream project: [code](https://github.com/re
 ## What it is
 
 - **Architecture:** Qwen2.5-1.5B-Base LLM backbone (BPE text, no phonemes) → AR flow-matching DiT head → 48 kHz AudioVAE with a BigVGAN-style causal decoder. A frozen CAM++ x-vector conditions the speaker identity.
-- **Zero-shot voice clone:** one reference wav (+ optional transcript) clones the voice; cross-language transfer works from a single reference.
+- **Zero-shot voice clone:** one reference wav + its transcript clones the voice; cross-language transfer works from a single reference.
 - **Clean onsets:** continuous AR means no discrete-token warm-up — the clip opens on a real word.
+- **Two decoders:** `soar` (10-step, quality) and `mf` MeanFlow (NFE=4, **~2× faster**) — auto-detected from the weights; see [Two decoders](#two-decoders--soar-quality-and-meanflow-fast).
+
+## Two decoders — `soar` (quality) and MeanFlow (fast)
+
+Upstream dots.tts releases two post-trained checkpoints; this port runs both, selected purely by which weights directory you load (auto-detected from `config.json` — no flag):
+
+| Decoder | Checkpoint | Sampler | Speed | Use |
+|---|---|---|---|---|
+| **soar** (SCA) | `dots.tts-soar` | 10-step flow-matching + CFG | baseline | default — best quality |
+| **MeanFlow** | `dots.tts-mf` | **NFE=4, no CFG** (distilled) | **~2× faster** | latency-sensitive |
+
+**MeanFlow** is a distilled few-step decoder: instead of ~10 Euler steps with classifier-free guidance, it predicts an average velocity and reaches full quality in **4 single-pass steps with no CFG**, cutting the dominant DiT cost. Measured here at **~1.9–2.2× faster** per clip on reference cloning (EN/HI/ZH); upstream's own benchmarks put MeanFlow NFE=4 **within ~1 SIM point of SCA** (essentially on par). It's a separate checkpoint (`soar` + a small `duration_embedder`); `--guidance-scale` is ignored in MeanFlow mode (CFG is fused into the student). The `soar` path is unchanged.
+
+Both decoders clone the same way — **reference audio + transcript** (in-context). Get the weights for either under [Weights](#weights).
 
 ## Install
 
@@ -78,28 +94,36 @@ Pre-converted, pre-quantized MLX weights are published at
 download the variant you want and point the runtime at it:
 
 ```bash
-# int4 — recommended (~2.4 GB, −73% vs the original ~9 GB)
+# soar (quality), int4 — recommended (~2.4 GB, −73% vs the original ~9 GB)
 hf download shraey/dots-tts-mlx --include "int4/*" --local-dir ./dots-tts-mlx-weights
-# files land in ./dots-tts-mlx-weights/int4/ — point --model there:
-dots-tts --model ./dots-tts-mlx-weights/int4 --text "Hello from MLX." --ref-audio ref.wav --language EN
+dots-tts --model ./dots-tts-mlx-weights/int4 \
+    --text "Hello from MLX." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
 
-# int8 — conservative fallback (~3.1 GB): same, with --include "int8/*" and --model .../int8
+# MeanFlow (~2× faster) — same flow, the mf-* folders:
+hf download shraey/dots-tts-mlx --include "mf-int4/*" --local-dir ./dots-tts-mlx-weights
+dots-tts --model ./dots-tts-mlx-weights/mf-int4 \
+    --text "Hello from MLX." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
+
+# int8 / mf-int8 are the conservative fallbacks (~3.1 GB): swap the folder name above.
 ```
 
 The downloaded folder is self-contained and loads exactly like an unquantized one — the runtime
-auto-detects the `quantization` block in `config.json`, so nothing changes at the CLI/API level.
+auto-detects the `quantization` block (and, for `mf-*`, the `meanflow` block) in `config.json`, so
+nothing changes at the CLI/API level.
 
-**Sizes:**
+**Variants** (pick a decoder × a precision):
 
-| Variant | Download | vs original |
-|---------|----------|-------------|
-| original `dots.tts-soar` (PyTorch) | ~9 GB | — |
-| **int4-LLM** ⭐ | **~2.4 GB** | **−73%** |
-| int8-LLM | ~3.1 GB | −65% |
+| Folder | Decoder | Download | vs original |
+|--------|---------|----------|-------------|
+| original `dots.tts-soar` / `dots.tts-mf` (PyTorch) | — | ~9 GB | — |
+| `int4/` ⭐ | soar — 10-step, quality | **~2.4 GB** | **−73%** |
+| `int8/` | soar — 10-step, quality | ~3.1 GB | −65% |
+| `mf-int4/` ⚡ | MeanFlow — NFE-4, **~2× faster** | ~2.4 GB | −73% |
+| `mf-int8/` | MeanFlow — NFE-4, **~2× faster** | ~3.1 GB | −65% |
 
 Only the **Qwen2.5 LLM trunk** (≈70% of the weights) is quantized; the precision-sensitive
-flow-matching DiT, the BigVGAN vocoder, and the CAM++ speaker stay bf16. int4 is the recommended
-download; int8 is the conservative fallback.
+flow-matching DiT, the BigVGAN vocoder, and the CAM++ speaker stay bf16. `int4` is the recommended
+download (`mf-int4` if you want the faster decoder); `int8`/`mf-int8` are the conservative fallbacks.
 
 **Quality.** Quantization is validated to be **lossless relative to the full-precision MLX build**: on a
 small multilingual acceptance check (EN/DE/ES/FR + Hindi), int8 and int4 showed no transcription-accuracy
@@ -133,46 +157,18 @@ python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx --out weights/dots_tt
 runtime. `quantize` needs only `mlx` + `mlx-lm` (no torch). Only the converted/quantized artifacts are
 needed to run — the original checkpoint + `[oracle]` extra can be removed afterward.
 
-### MeanFlow few-step decoder (the `mf` checkpoint)
+### MeanFlow weights from source (`mf-*`)
 
-`dots.tts-mf` is a distilled checkpoint that runs the acoustic DiT at **NFE=4 with no
-classifier-free guidance** instead of the standard ~10-step flow-matching sampler —
-~1.6–2.2× faster per clip (≈2.3× on the DiT-dominated cost), with no measurable quality
-loss. It is a **separate checkpoint** (soar + a `duration_embedder`).
-
-**Ready-to-run weights** are on Hugging Face alongside soar — grab `mf-int4` (recommended) or `mf-int8`:
+Ready-to-run `mf-int4` / `mf-int8` are in [Option A](#option-a--download-ready-mlx-weights-recommended) above; see [Two decoders](#two-decoders--soar-quality-and-meanflow-fast) for what MeanFlow is. To build them yourself, convert + quantize the upstream `dots.tts-mf` checkpoint — **exactly like soar** (the quantizer targets only the LLM trunk, so the `duration_embedder` stays bf16 and MeanFlow mode survives every variant):
 
 ```bash
-hf download shraey/dots-tts-mlx --include "mf-int4/*" --local-dir ./mf-weights
-dots-tts --model ./mf-weights/mf-int4 --text "..." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
+hf download rednote-hilab/dots.tts-mf --local-dir weights/dots_tts_src/dots.tts-mf
+python -m dots_tts_mlx.convert  --src weights/dots_tts_src/dots.tts-mf --out weights/dots_tts_mlx_mf
+python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int4 --bits 4  # or --bits 8 / 16
+dots-tts --model weights/dots_tts_mlx_mf_int4 --text "..." --ref-audio ref.wav --ref-text "transcript of ref.wav" --language EN
 ```
 
-Or build it from source (convert + quantize):
-
-```bash
-python -m dots_tts_mlx.convert --src weights/dots_tts_src/dots.tts-mf --out weights/dots_tts_mlx_mf
-python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_bf16 --bits 16
-dots-tts --model weights/dots_tts_mlx_mf_bf16 --text "..." --ref-audio ref.wav --ref-text "..." --language EN
-```
-
-MeanFlow mode is **auto-detected** from the checkpoint's `config.json` (`meanflow` block) —
-there is no flag to set. `--num-steps` then defaults to 4 (it is the NFE); `--guidance-scale`
-is ignored (CFG is fused into the distilled student). The flow-matching (`soar`) path is
-unchanged.
-
-The mf checkpoint quantizes exactly like soar — the quantizer targets only the LLM trunk, so
-the `duration_embedder` stays bf16 and meanflow mode is preserved across all variants:
-
-```bash
-python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int8 --bits 8
-python -m dots_tts_mlx.quantize --src weights/dots_tts_mlx_mf --out weights/dots_tts_mlx_mf_int4 --bits 4
-```
-
-| mf variant | `core.safetensors` | runtime peak (render) |
-|---|---|---|
-| bf16 | ~4.2 GB | ~19 GB (loaded alongside soar) |
-| int8 | ~2.8 GB | ~13.3 GB |
-| int4 | ~2.1 GB | ~12.6 GB |
+MeanFlow mode is **auto-detected** from `config.json` (the `meanflow` block) — no flag. `--num-steps` then defaults to 4 (the NFE) and `--guidance-scale` is ignored (CFG is fused into the distilled student).
 
 ## CLI usage
 
@@ -189,7 +185,7 @@ dots-tts \
 
 Key flags:
 
-- `--ref-audio` (required) — the voice to clone. `--ref-text` is the reference transcript; **omit it for an x-vector-only clone** (no prompt transcript).
+- `--ref-audio` **+** `--ref-text` (both required to clone) — the voice to clone and its **exact transcript** (what is actually spoken in the clip). The transcript conditions the in-context clone; it is **never** part of the output — only your `--text` is synthesized.
 - `--language` — uppercase ISO code (`EN` / `DE` / `ES` / `FR` / `HI` / …). Default `None` = no language tag.
 - `--num-steps 10` `--guidance-scale 1.2` `--speaker-scale 1.5` `--seed 42` — flow-matching sampler knobs (defaults are the validated ship config).
 - `--speed 1.0` — adjust playback tempo, **pitch-preserving** (ffmpeg `atempo`; `<1` slower, `>1` faster), applied after onset-trim.
@@ -198,23 +194,15 @@ Key flags:
 
 ## Choosing a reference
 
-The voice clone uses the reference **two ways**, and you choose which:
-
-- **x-vector-only** (`--ref-audio` only, *no* `--ref-text`): a CAM++ speaker fingerprint
-  conditions the *identity*. It is **robust and length-insensitive** (clip length barely
-  matters), adds **no per-chunk cost** under `--long`, and lets the model use its own natural
-  prosody. **This is the safe default** — especially when you don't have an exact transcript of
-  the reference clip.
-- **reference + transcript** (`--ref-audio` **+** `--ref-text`): also feeds the reference audio
-  and its transcript as an in-context prefix the model *continues*, so it matches the
-  reference's delivery more closely. The `--ref-text` must be **what is actually spoken in the
-  reference clip** — it is **never** part of the output; only your `--text` is synthesized.
+Cloning is **in-context**: pass the reference audio (`--ref-audio`) **and its exact transcript**
+(`--ref-text`) — what is actually spoken in the clip — and the model continues that prefix in the
+cloned voice. The transcript is **never** part of the output; only your `--text` is synthesized.
 
 **Keep the reference short (a few seconds).** A longer reference does **not** improve adherence,
-and in the in-context path it costs noticeably more time — the model re-attends the whole
-reference on every step (and on every sentence under `--long`). With a short, accurate transcript
-the in-context path can sound a touch closer to the reference; otherwise **x-vector-only is the
-robust, faster choice.**
+and it costs noticeably more time and memory — the model re-attends the whole reference on every
+step (and on every sentence under `--long`). A short, accurate transcript gives the closest match
+at the lowest cost. For long cloned passages, [enroll the voice once](#enroll-once-reuse-a-voice)
+so the reference encode isn't recomputed per sentence.
 
 ## Long / multilingual text (`--long`)
 
@@ -243,10 +231,8 @@ per-chunk cap). Because every chunk stays short:
   are modestly quicker than one long pass. (It is *not* a per-clip speed-up — for that, use the
   [MeanFlow decoder](#meanflow-few-step-decoder-the-mf-checkpoint).)
 
-**Reference cost under `--long`.** Each chunk re-applies the reference. If you clone **with a
-transcript** (in-context), that reference prefix is re-attended for *every* sentence — so for
-long text prefer a **short reference** or **x-vector-only** (see
-[Choosing a reference](#choosing-a-reference)), and/or
+**Reference cost under `--long`.** Each chunk re-applies the reference, and that prefix is
+re-attended for *every* sentence — so for long text keep the reference **short**, and/or
 [enroll the voice once](#enroll-once-reuse-a-voice) so the reference encode isn't recomputed per
 sentence. `--speed` and `--profile` both work with `--long`.
 
@@ -268,7 +254,7 @@ model = from_pretrained("weights/dots_tts_mlx", dtype=mx.bfloat16).model
 out = model.generate(
     text="Hello from MLX.",
     prompt_audio="reference.wav",
-    prompt_text="transcript of reference.wav",   # or None for x-vector-only clone
+    prompt_text="transcript of reference.wav",   # the reference transcript (required to clone)
     language="EN",
     num_steps=10,
     guidance_scale=1.2,
@@ -314,17 +300,16 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 ```
 
 - **Footprint:** profile generation skips the reference re-encode every call, dropping the
-  steady-state peak from ~10.8 GB to **~6.6 GB** (−39%, near the x-vector-only floor). The
+  steady-state peak from ~10.8 GB to **~6.6 GB** (−39%). The
   ~10 GB enrollment peak is paid once.
 - **Output is identical** to the equivalent one-shot `generate(prompt_audio=…, prompt_text=…)`.
 - **Portable across precisions:** a profile enrolled on int4 also loads on int8 / bf16
   (the cached conditioning comes from bf16-only components). Loading against a different
   model raises a clear error.
 - **Pairs with `--long`:** chunked long-form generation otherwise re-encodes the reference
-  **once per sentence**. A profile (or an x-vector-only clone) does that work **once**, so
-  enrolling and passing `--profile` is the efficient way to clone a voice across a long passage.
+  **once per sentence**. A profile does that work **once**, so enrolling and passing `--profile`
+  is the efficient way to clone a voice across a long passage.
 - `--enroll` requires `--ref-text`; `--profile` is mutually exclusive with `--ref-audio`/`--ref-text`.
-  (X-vector-only clones — no `--ref-text` — are already cheap at ~6 GB and need no profile.)
 
 > **Why this exists / not in upstream.** Upstream `dots.tts` has no enroll/profile concept — it
 > re-encodes the reference (CAM++ x-vector + the AudioVAE encode + the patch-encoder pass) on **every**
@@ -336,9 +321,8 @@ out = model.generate("Hello from the enrolled voice.", profile=profile, language
 ## Roadmap
 
 - **Cheaper cloned chunking.** Reusing one enrolled reference across `--long` chunks (so the
-  in-context prefix isn't re-attended per sentence) is a planned optimization; today, prefer
-  x-vector-only or a short reference for long cloned passages (see
-  [Choosing a reference](#choosing-a-reference)).
+  in-context prefix isn't re-attended per sentence) is a planned optimization; today, keep the
+  reference short or [enroll the voice once](#enroll-once-reuse-a-voice) for long cloned passages.
 
 ## How it was ported / parity
 
@@ -364,7 +348,7 @@ Tests live in `tests/` (pytest). They skip cleanly when the converted weights or
 These are specifics of *this MLX port* — not limitations of the model itself, which behaves the same as upstream dots.tts.
 
 - **Apple Silicon only** — MLX is Metal-only (the upstream PyTorch model targets CUDA).
-- **Footprint:** ~10 GB RAM at bf16, or ~6 GB with a short (2–3 s) reference. This is inherent to the 2B model (same class as upstream), not specific to this port; fp32 runs land ~2×.
+- **Footprint:** peak RAM scales with generation + reference length — roughly **~6 GB for a short clip, up to ~13 GB for a ~30 s clip** (int4; resident weights ~2.4 GB). The render peak is **activation-bound** (the bf16 DiT + vocoder working set), so it's the same for soar and MeanFlow and is **not** reduced by quantization (quant shrinks the resident floor, not the transient peak). Inherent to the 2B model (same class as upstream); fp32 runs land ~2×. MLX's allocator may cache up to its limit, but that cache is releasable.
 - The runtime makes **no torch calls**, though `torch` / `transformers` are pulled in transitively by `mlx-lm`'s tokenizer utilities — the inference math is pure MLX.
 
 ## Responsible use
