@@ -139,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="(--long) max reseed-retries per degenerate chunk (default 2; 0 = off).",
     )
+    ap.add_argument(
+        "--progress",
+        action="store_true",
+        help="Show progress during generation (patch count, stage).",
+    )
     return ap
 
 
@@ -166,7 +171,27 @@ def main() -> int:
     if not args.text:
         ap.error("--text is required for generation")
 
+    import sys
+    import time
+
+    _start_time = time.time()
+    _last_print_time = 0.0
+
+    def _progress_callback(current: int, total: int, stage: str):
+        nonlocal _last_print_time
+        now = time.time()
+        if now - _last_print_time < 0.1:
+            return
+        _last_print_time = now
+        elapsed = now - _start_time
+        print(f"\r[dots] {stage} | {elapsed:.1f}s elapsed", end="", file=sys.stderr, flush=True)
+
+    progress_cb = _progress_callback if args.progress else None
+
     model = from_pretrained(args.model, dtype=mx.bfloat16).model
+
+    if args.progress:
+        print(f"[dots] model loaded | {time.time() - _start_time:.1f}s", file=sys.stderr, flush=True)
 
     if args.profile:
         from dots_tts_mlx.profile import SpeakerProfile
@@ -188,6 +213,7 @@ def main() -> int:
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
             streaming_decode=not args.no_streaming_decode,
+            progress_callback=progress_cb,
             **_kw,
         )
     else:
@@ -216,8 +242,12 @@ def main() -> int:
             max_generate_length=args.max_generate_length,
             trim_onset=args.trim_onset,
             streaming_decode=not args.no_streaming_decode,
+            progress_callback=progress_cb,
             **_kw,
         )
+
+    if args.progress:
+        print(file=sys.stderr)  # newline after progress output
 
     # Onset-transient trimming now happens INSIDE generate() (default-on, gated by
     # trim_onset above) so every caller gets it; nothing to do here but write.

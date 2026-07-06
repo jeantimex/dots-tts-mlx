@@ -1,0 +1,12 @@
+{
+  "compat_hash": "084b6a52a07e79241719f131c3e54fda463fccba4b3a0785df8230457b2205b3",
+  "dtype": "bfloat16",
+  "hop_size": 1920,
+  "latent_dim": 128,
+  "patch_size": 4,
+  "prompt_patch_count": 61,
+  "prompt_text": "It's still such a mystery to me, even though I've been writing songs for so long and I've started songs and finished songs so many different ways they've gone through.",
+  "sample_rate": 48000,
+  "schema_version": 2,
+  "speaker_scale": 1.5
+}

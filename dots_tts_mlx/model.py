@@ -508,6 +508,7 @@ class DotsTtsModel:
         eos_threshold: float = 0.8,
         trim_onset: bool = True,
         streaming_decode: bool = True,
+        progress_callback: "Callable[[int, int, str], None] | None" = None,  # noqa: F821
     ) -> dict:
         """Synthesize ``text`` (optionally cloning ``prompt_audio``) -> 48 kHz wav.
 
@@ -526,6 +527,9 @@ class DotsTtsModel:
         full history every patch, O(n^3)) — kept as a fallback and the on-device parity
         oracle. Both paths are numerically identical (the encoder is fully causal, no
         rotary/qk-norm).
+
+        ``progress_callback`` (optional) is called after each patch with
+        ``(current_patch, max_patches, stage)`` where stage is "prefill" or "decode".
         """
         mx.random.seed(int(seed))
         np.random.seed(int(seed))
@@ -650,6 +654,9 @@ class DotsTtsModel:
         )
         llm_hiddens = self._last_prefill_hidden
 
+        if progress_callback is not None:
+            progress_callback(0, max_generate_length, "prefill")
+
         # --- decode loop. ---
         g_cond_run = None if g_cond is None else g_cond.astype(self.dtype)
         null_g_cond = mx.zeros((1, self.fm_hidden), dtype=self.dtype)
@@ -660,6 +667,7 @@ class DotsTtsModel:
         # span_cursor: index into span_positions for the NEXT audio span.
         span_cursor = bisect.bisect_left(span_positions, position)
         end_flag = False
+        patch_count = 0
 
         while position < n_sched and not end_flag:
             token_id = schedule_ids[position]
@@ -718,6 +726,10 @@ class DotsTtsModel:
 
                 position += 1
                 span_cursor += 1
+                patch_count += 1
+
+                if progress_callback is not None:
+                    progress_callback(patch_count, max_generate_length, "decode")
 
                 if should_drop_regenerated:
                     should_drop_regenerated = False  # discard the prompt-tail patch
@@ -780,6 +792,7 @@ class DotsTtsModel:
         retry_degenerate: bool = True,
         max_retries: int = 2,
         validator: "Callable[[np.ndarray, str, int], bool] | None" = None,  # noqa: F821
+        progress_callback: "Callable[[int, int, str], None] | None" = None,  # noqa: F821
     ) -> dict:
         """Render long/multilingual text by sentence-chunking.
 
@@ -816,7 +829,10 @@ class DotsTtsModel:
         total_retries = 0
         unrecovered = 0
 
-        def _gen_once(chunk: str, chunk_seed: int):
+        def _gen_once(chunk: str, chunk_seed: int, chunk_idx: int = 0):
+            def _chunk_progress(patch: int, max_patch: int, stage: str):
+                if progress_callback is not None:
+                    progress_callback(chunk_idx, len(chunks), f"chunk {chunk_idx+1}/{len(chunks)}: {stage} patch {patch}")
             out = self.generate(
                 chunk,
                 prompt_audio=prompt_audio,
@@ -831,6 +847,7 @@ class DotsTtsModel:
                 eos_threshold=eos_threshold,
                 trim_onset=trim_onset,
                 streaming_decode=streaming_decode,
+                progress_callback=_chunk_progress if progress_callback else None,
             )
             return np.asarray(out["audio"][0].astype(mx.float32)), int(out["num_patches"])
 
@@ -845,7 +862,7 @@ class DotsTtsModel:
             return True
 
         for i, chunk in enumerate(chunks):
-            best_audio, best_patches = _gen_once(chunk, seed)  # attempt 0 = current seed
+            best_audio, best_patches = _gen_once(chunk, seed, i)  # attempt 0 = current seed
             accepted = _accept(best_audio, chunk)
             attempt = 0
             while not accepted and retry_degenerate and attempt < max_retries:
@@ -855,7 +872,7 @@ class DotsTtsModel:
                 mx.clear_cache()
                 gc.collect()
                 chunk_seed = int(seed) + 1_000_003 * (i + 1) + 101 * attempt
-                cand_audio, cand_patches = _gen_once(chunk, chunk_seed)
+                cand_audio, cand_patches = _gen_once(chunk, chunk_seed, i)
                 if _accept(cand_audio, chunk):
                     best_audio, best_patches, accepted = cand_audio, cand_patches, True
                 elif cand_audio.size > best_audio.size:
