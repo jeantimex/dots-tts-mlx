@@ -83,6 +83,20 @@ Two distinct workflows use this extra — don't conflate them:
 
 `ffmpeg` is needed only if you use `--speed` (post-hoc time-stretch).
 
+### Troubleshooting installation
+
+**`transformers` version conflict.** Recent versions of `mlx-lm` (≥0.30) require `transformers>=5.0.0`, but `transformers` 5.x has a bug with `AutoTokenizer.register()`. If you see an `AttributeError: 'str' object has no attribute '__module__'` error, downgrade both packages:
+
+```bash
+pip install "transformers>=4.40.0,<5.0.0" "mlx-lm<0.30.0"
+```
+
+**`torchcodec` missing (for `demucs`).** If using the `prepare_reference.py` script with `demucs` for noise removal and you see `ImportError: TorchCodec is required for save_with_torchcodec`, install:
+
+```bash
+pip install torchcodec
+```
+
 ## Weights
 
 Two ways to get runnable MLX weights — **most people want Option A.**
@@ -203,6 +217,68 @@ and it costs noticeably more time and memory — the model re-attends the whole 
 step (and on every sentence under `--long`). A short, accurate transcript gives the closest match
 at the lowest cost. For long cloned passages, [enroll the voice once](#enroll-once-reuse-a-voice)
 so the reference encode isn't recomputed per sentence.
+
+### Prepare reference audio (`scripts/prepare_reference.py`)
+
+A helper script automates reference preparation: download from YouTube (with time trimming), remove background noise, and transcribe with `faster-whisper`.
+
+**Install dependencies:**
+
+```bash
+pip install faster-whisper demucs torchcodec
+brew install yt-dlp ffmpeg   # or: pip install yt-dlp
+```
+
+**Usage:**
+
+```bash
+# From a local audio file
+python scripts/prepare_reference.py --input voice.wav --output-dir ./references
+
+# From YouTube with time range (extract 30s to 45s)
+python scripts/prepare_reference.py \
+    --input "https://youtube.com/watch?v=VIDEO_ID" \
+    --start 00:30 --end 00:45 \
+    --output-dir ./references \
+    --name my_voice
+
+# Skip noise removal for already-clean audio
+python scripts/prepare_reference.py --input clean.wav --noise-removal none
+
+# Use faster (but lower quality) ffmpeg noise reduction instead of demucs
+python scripts/prepare_reference.py --input voice.wav --noise-removal ffmpeg
+
+# Specify language for transcription (auto-detected if omitted)
+python scripts/prepare_reference.py --input voice.wav --language zh
+```
+
+**Output files:**
+
+- `{name}.wav` — Clean reference audio (24kHz mono, ≤10s by default)
+- `{name}.txt` — Transcript text
+- `{name}_meta.txt` — Metadata (source, language, duration)
+
+**Then use with dots-tts:**
+
+```bash
+dots-tts --ref-audio references/my_voice.wav \
+    --ref-text "$(cat references/my_voice.txt)" \
+    --text "Your text to synthesize" \
+    --language EN
+```
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--input`, `-i` | Input audio file (WAV/MP3/M4A) or YouTube URL |
+| `--output-dir`, `-o` | Output directory (default: `./references`) |
+| `--name`, `-n` | Output filename prefix (default: `reference`) |
+| `--start`, `-s` | Start time for trimming (e.g., `00:30`, `1:23`, `90`) |
+| `--end`, `-e` | End time for trimming |
+| `--language`, `-l` | Language code for transcription (auto-detect if omitted) |
+| `--noise-removal` | `demucs` (best), `ffmpeg` (fast), or `none` (default: `demucs`) |
+| `--max-duration` | Max reference duration in seconds (default: `10.0`) |
 
 ## Long / multilingual text (`--long`)
 
